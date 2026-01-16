@@ -5,21 +5,41 @@ export const parseCSV = (csvText: string): DashboardData => {
   const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
   if (lines.length === 0) return { headers: [], rows: [] };
 
-  const headers = lines[0].split(',').map(h => h.trim());
+  // Improved regex to handle commas inside quotes
+  const splitLine = (line: string) => {
+    const result = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(cur.trim());
+        cur = "";
+      } else {
+        cur += char;
+      }
+    }
+    result.push(cur.trim());
+    return result;
+  };
+
+  const headers = splitLine(lines[0]);
   const rows = lines.slice(1).map(line => {
-    // Basic CSV splitting (does not handle nested commas in quotes, 
-    // but typically sufficient for exported spreadsheet data)
-    const values = line.split(',').map(v => v.trim());
+    const values = splitLine(line);
     const row: Record<string, any> = {};
     
     headers.forEach((header, index) => {
       let val: any = values[index] || "";
       
-      // Sanitization: If it's a percentage string like "89.91%", keep the string for display 
-      // but ensure other parts of the app can parse it.
-      
-      // Check if value is numeric or can be a number
-      if (val !== "" && !isNaN(val as any)) {
+      // Clean up surrounding quotes if they exist
+      if (typeof val === 'string') {
+        val = val.replace(/^"|"$/g, '');
+      }
+
+      // Check if value is numeric
+      if (val !== "" && !isNaN(val as any) && typeof val !== 'boolean') {
         row[header] = Number(val);
       } else {
         row[header] = val;
