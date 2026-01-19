@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
-  PieChart, Pie, Cell, LabelList
+  PieChart, Pie, Cell, LabelList, Sector
 } from 'recharts';
 import { DashboardData } from './types';
 import { parseCSV } from './utils/dataParser';
@@ -9,8 +9,7 @@ import { parseCSV } from './utils/dataParser';
 // --- CONFIGURATION ---
 const PUBLISHED_ID = '2PACX-1vSrx7lqwi5bjj99rYho8jYGBYH47sYw2a5d62uPGrKS-HvSgiz6o-Rx_opsCMGNhVNRjJNx2bi6OTfK';
 const BASE_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?output=csv`;
-const INDEX_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pubhtml`;
-const REFRESH_INTERVAL = 120000; // 2 minutes
+const REFRESH_INTERVAL = 120000;
 
 const TABS_CONFIG = {
   SUMMARY: { id: 'summary', label: 'Report Summary', gid: '0', icon: '📊' },
@@ -35,7 +34,7 @@ const DATE_COL_ALIASES = ['Build Date', 'Date', 'Reported Date', 'Created At'];
 const BUILD_TYPE_COL_ALIASES = ['Build Type', 'Type', 'Deployment Type', 'Category'];
 const BUILD_STATUS_COL_ALIASES = ['Status', 'Overall Status', 'Result', 'Execution Status'];
 
-// --- TYPES ---
+// --- INTERFACES ---
 interface MetricCardProps {
   title: string;
   value: string | number;
@@ -46,12 +45,8 @@ interface CardProps {
   title: string;
   children?: React.ReactNode;
   loading?: boolean;
-  discoveryLoading?: boolean;
   error?: string | null;
-  tabId?: string;
   onRetry?: () => void;
-  onApplyFix?: (newGid: string) => void;
-  suggestedGid?: string | null;
 }
 
 interface BadgeProps {
@@ -61,186 +56,79 @@ interface BadgeProps {
   size?: 'sm' | 'md';
 }
 
-interface DateSelectorProps {
-  label: string;
-  value: string;
-  onChange: (val: string) => void;
-  placeholder?: string;
-}
+// --- SUB-COMPONENTS ---
 
-// --- CUSTOM TOOLTIP COMPONENT ---
 const CustomTooltip = ({ active, payload, label }: any) => {
-  if (active && payload && payload.length) {
-    const title = label || payload[0].name;
-    return (
-      <div className="bg-white dark:bg-slate-800 p-3 md:p-4 border border-slate-100 dark:border-slate-700 shadow-2xl rounded-2xl animate-in fade-in zoom-in-95 duration-200 min-w-[140px]">
-        <p className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 border-b border-slate-50 dark:border-slate-700 pb-2">{title}</p>
-        <div className="space-y-1.5 md:space-y-2">
-          {payload.map((entry: any, index: number) => {
-            const isPie = entry.payload && entry.payload.percent !== undefined;
-            const percentage = isPie ? `(${(entry.payload.percent * 100).toFixed(1)}%)` : '';
-            return (
-              <div key={index} className="flex items-center justify-between gap-4 md:gap-8">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color || entry.fill }}></div>
-                  <span className="text-[9px] md:text-[10px] font-bold text-slate-500 dark:text-slate-400">{entry.name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-[10px] md:text-xs font-black text-slate-900 dark:text-white">{entry.value}</span>
-                  {percentage && <span className="text-[8px] md:text-[9px] font-medium text-slate-400">{percentage}</span>}
-                </div>
+  if (!active || !payload?.length) return null;
+  const title = label || payload[0].name;
+  return (
+    <div className="bg-white/98 dark:bg-slate-900/98 backdrop-blur-md p-3 border border-slate-200 dark:border-slate-800 shadow-2xl rounded-xl animate-in fade-in duration-150 min-w-[140px] pointer-events-none z-[200]">
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5 border-b border-slate-50 dark:border-slate-800 pb-1.5">{title}</p>
+      <div className="space-y-1.5">
+        {payload.map((entry: any, index: number) => {
+          const percent = entry.payload?.percent !== undefined ? entry.payload.percent : entry.percent;
+          return (
+            <div key={index} className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color || entry.fill }} />
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">{entry.name}</span>
               </div>
-            );
-          })}
-        </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] font-black text-slate-900 dark:text-white">{entry.value}</span>
+                {percent !== undefined && (
+                  <span className="text-[9px] font-black text-primary-500 bg-primary-50 dark:bg-primary-900/30 px-2 py-0.5 rounded-md">
+                    {(percent * 100).toFixed(1)}%
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
-    );
-  }
-  return null;
+    </div>
+  );
 };
 
-// --- CALENDAR COMPONENT ---
-function CalendarPopover({ value, onSelect, onClose }: { value: string, onSelect: (val: string) => void, onClose: () => void }) {
-  const [viewDate, setViewDate] = useState(() => value ? new Date(value) : new Date());
+function DateSelector({ value, onChange, placeholder }: { value: string, onChange: (v: string) => void, placeholder: string }) {
+  const [isOpen, setIsOpen] = useState(false);
   const calendarRef = useRef<HTMLDivElement>(null);
-
+  
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (calendarRef.current && !calendarRef.current.contains(event.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose]);
+    const click = (e: MouseEvent) => { if (calendarRef.current && !calendarRef.current.contains(e.target as Node)) setIsOpen(false); };
+    document.addEventListener('mousedown', click);
+    return () => document.removeEventListener('mousedown', click);
+  }, []);
 
-  const year = viewDate.getFullYear();
-  const month = viewDate.getMonth();
-
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDayOfMonth = new Date(year, month, 1).getDay();
-
-  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-  const handlePrevMonth = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setViewDate(new Date(year, month - 1, 1));
-  };
-
-  const handleNextMonth = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setViewDate(new Date(year, month + 1, 1));
-  };
-
-  const handleDaySelect = (day: number) => {
-    const selected = new Date(year, month, day);
-    const formatted = selected.toISOString().split('T')[0];
-    onSelect(formatted);
-    onClose();
-  };
-
-  const isSelected = (day: number) => {
-    if (!value) return false;
-    const d = new Date(value);
-    return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
-  };
-
-  const days = [];
-  for (let i = 0; i < firstDayOfMonth; i++) {
-    days.push(<div key={`empty-${i}`} className="h-8 w-8"></div>);
-  }
-  for (let i = 1; i <= daysInMonth; i++) {
-    days.push(
-      <button
-        key={i}
-        onClick={() => handleDaySelect(i)}
-        className={`h-8 w-8 rounded-lg text-[10px] font-bold transition-all hover:bg-primary-50 dark:hover:bg-primary-900/30 flex items-center justify-center ${
-          isSelected(i) 
-            ? 'bg-primary-600 text-white shadow-lg shadow-primary-500/20' 
-            : 'text-slate-600 dark:text-slate-300'
-        }`}
-      >
-        {i}
-      </button>
-    );
-  }
+  const formatDate = (val: string) => val ? new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : placeholder;
 
   return (
-    <div ref={calendarRef} className="absolute top-full left-1/2 -translate-x-1/2 md:left-0 md:translate-x-0 mt-2 z-[100] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-4 w-[260px] max-w-[calc(100vw-2rem)] animate-in fade-in zoom-in-95 duration-200">
-      <div className="flex items-center justify-between mb-4 px-1">
-        <button onClick={handlePrevMonth} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors">
-          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-        </button>
-        <span className="text-[11px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
-          {months[month]} {year}
-        </span>
-        <button onClick={handleNextMonth} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors">
-          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-        </button>
+    <div className="relative flex-1 min-w-0">
+      <div onClick={() => setIsOpen(!isOpen)} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center justify-between group">
+        <span className={`truncate mr-2 ${value ? 'text-slate-900 dark:text-white' : 'text-slate-400'}`}>{formatDate(value)}</span>
+        <svg className="w-3.5 h-3.5 text-slate-300 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
       </div>
-      <div className="grid grid-cols-7 gap-1 text-center mb-1">
-        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => (
-          <div key={d} className="text-[9px] font-black text-slate-400 uppercase py-1">{d}</div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-1">
-        {days}
-      </div>
-      {value && (
-        <button 
-          onClick={() => { onSelect(''); onClose(); }} 
-          className="w-full mt-4 py-2 text-[9px] font-black uppercase text-slate-400 hover:text-rose-500 transition-colors border-t border-slate-50 dark:border-slate-800 pt-3"
-        >
-          Clear Date
-        </button>
+      {isOpen && (
+        <div ref={calendarRef} className="absolute top-full left-1/2 -translate-x-1/2 md:left-0 md:translate-x-0 mt-2 z-[100] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-4 w-[260px] animate-in fade-in zoom-in-95">
+           <input type="date" value={value} onChange={(e) => { onChange(e.target.value); setIsOpen(false); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500" />
+           {value && <button onClick={() => { onChange(''); setIsOpen(false); }} className="w-full mt-3 text-[9px] font-black uppercase text-slate-400 hover:text-rose-500">Clear</button>}
+        </div>
       )}
     </div>
   );
 }
 
-function DateSelector({ value, onChange, placeholder }: Omit<DateSelectorProps, 'label'>) {
-  const [isOpen, setIsOpen] = useState(false);
+// --- MAIN APP COMPONENT ---
 
-  const formatDate = (val: string) => {
-    if (!val) return placeholder || 'Select date';
-    const date = new Date(val);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  };
-
-  return (
-    <div className="relative flex-1 min-w-0">
-      <div 
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 text-[11px] md:text-xs font-bold transition-all cursor-pointer flex items-center justify-between group overflow-hidden"
-      >
-        <span className={`truncate mr-2 ${value ? 'text-slate-900 dark:text-white' : 'text-slate-400'}`}>{formatDate(value)}</span>
-        <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180 text-primary-500' : 'text-slate-300 group-hover:text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
-      </div>
-      {isOpen && <CalendarPopover value={value} onSelect={onChange} onClose={() => setIsOpen(false)} />}
-    </div>
-  );
-}
-
-// --- MAIN APP ---
 export default function App() {
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => 
-    (localStorage.getItem('dashboard-theme') as 'light' | 'dark') || 'light'
-  );
-  
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('dashboard-theme') as 'light' | 'dark') || 'light');
   const [dataMap, setDataMap] = useState<Record<string, DashboardData>>({});
   const [activeTab, setActiveTab] = useState<string>(TABS_CONFIG.SUMMARY.id);
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
-  const [discoveryLoadingMap, setDiscoveryLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
-  const [suggestedGidMap, setSuggestedGidMap] = useState<Record<string, string | null>>({});
-  const [gidOverrides, setGidOverrides] = useState<Record<string, string>>({});
   const [lastUpdatedMap, setLastUpdatedMap] = useState<Record<string, Date>>({});
   const [refreshProgress, setRefreshProgress] = useState(0);
-  const [isSyncingInBackground, setIsSyncingInBackground] = useState(false);
-  const [silentErrorMap, setSilentErrorMap] = useState<Record<string, boolean>>({});
-  
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [selectedPlatform, setSelectedPlatform] = useState<string>('All');
   const [selectedBuild, setSelectedBuild] = useState<string>('All');
   const [startDate, setStartDate] = useState<string>('');
@@ -249,179 +137,63 @@ export default function App() {
   const isDark = theme === 'dark';
 
   useEffect(() => {
-    if (isDark) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
-  }, [isDark]);
-
-  const attemptGidDiscovery = async (tabId: string, tabLabel: string) => {
-    setDiscoveryLoadingMap(prev => ({ ...prev, [tabId]: true }));
-    try {
-      const response = await fetch(`${INDEX_URL}?t=${Date.now()}`);
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          throw new Error("Cannot discover tabs: Spreadsheet is private.");
-        }
-        return null;
-      }
-      
-      const html = await response.text();
-      if (html.includes('ServiceLogin') || html.includes('Sign in - Google Accounts')) {
-        throw new Error("Discovery failed: Sheet is not published publicly.");
-      }
-      
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-      const tabs = doc.querySelectorAll('li[id^="sheet-button-"]');
-      
-      for (const tab of Array.from(tabs)) {
-        const link = tab.querySelector('a');
-        const text = link?.textContent?.trim().toLowerCase() || '';
-        const target = tabLabel.toLowerCase();
-        
-        if (text === target || text.includes(target) || target.includes(text)) {
-          const gid = link?.getAttribute('href')?.replace('#', '');
-          if (gid) {
-            setSuggestedGidMap(prev => ({ ...prev, [tabId]: gid }));
-            return gid;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.warn("GID auto-discovery failed", e);
-      setErrorMap(prev => ({ ...prev, [tabId]: e.message }));
-    } finally {
-      setDiscoveryLoadingMap(prev => ({ ...prev, [tabId]: false }));
-    }
-    return null;
-  };
+    localStorage.setItem('dashboard-theme', theme);
+    document.documentElement.classList.toggle('dark', isDark);
+  }, [theme, isDark]);
 
   const fetchData = useCallback(async (tabId: string, silent = false) => {
-    if (!silent) setLoadingMap(prev => ({ ...prev, [tabId]: true }));
-    if (!silent) setErrorMap(prev => ({ ...prev, [tabId]: null }));
-    
+    if (!silent) { setLoadingMap(p => ({ ...p, [tabId]: true })); setErrorMap(p => ({ ...p, [tabId]: null })); }
     const config = Object.values(TABS_CONFIG).find(t => t.id === tabId);
     if (!config) return;
-
-    const currentGid = gidOverrides[tabId] || config.gid;
-
     try {
-      const fetchUrl = `${BASE_URL}&gid=${currentGid}&t=${Date.now()}`;
-      const response = await fetch(fetchUrl, { cache: 'no-store' });
-      
-      if (!response.ok) {
-        if (response.status === 400 && !silent) {
-          attemptGidDiscovery(tabId, config.label);
-          throw new Error(`The requested tab (GID: ${currentGid}) was not found.`);
-        }
-        throw new Error(`Connection error (Status: ${response.status}).`);
-      }
-      
-      const csvText = await response.text();
-      if (csvText.includes('ServiceLogin') || csvText.includes('Sign in - Google Accounts') || csvText.includes('<!DOCTYPE html>')) {
-        throw new Error("Authentication required. Please publish the sheet to the web.");
-      }
-
-      const parsed = parseCSV(csvText);
-      setDataMap(prev => ({ ...prev, [tabId]: parsed }));
-      setLastUpdatedMap(prev => ({ ...prev, [tabId]: new Date() }));
-      setSuggestedGidMap(prev => ({ ...prev, [tabId]: null }));
-      setSilentErrorMap(prev => ({ ...prev, [tabId]: false }));
-      if (!silent) setErrorMap(prev => ({ ...prev, [tabId]: null }));
-    } catch (error: any) {
-      if (silent) {
-        setSilentErrorMap(prev => ({ ...prev, [tabId]: true }));
-      } else {
-        setErrorMap(prev => ({ ...prev, [tabId]: error.message }));
-      }
-    } finally {
-      if (!silent) setLoadingMap(prev => ({ ...prev, [tabId]: false }));
-    }
-  }, [gidOverrides]);
+      const resp = await fetch(`${BASE_URL}&gid=${config.gid}&t=${Date.now()}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      if (text.includes('<!DOCTYPE html>')) throw new Error("Private sheet");
+      setDataMap(p => ({ ...p, [tabId]: parseCSV(text) }));
+      setLastUpdatedMap(p => ({ ...p, [tabId]: new Date() }));
+    } catch (e: any) {
+      if (!silent) setErrorMap(p => ({ ...p, [tabId]: e.message }));
+    } finally { if (!silent) setLoadingMap(p => ({ ...p, [tabId]: false })); }
+  }, []);
 
   const syncAll = useCallback(async (isAuto = false) => {
-    if (isAuto) setIsSyncingInBackground(true);
-    await Promise.all(Object.values(TABS_CONFIG).map(tab => fetchData(tab.id, isAuto)));
-    if (isAuto) setIsSyncingInBackground(false);
-    setRefreshProgress(0); // Reset timer on successful sync
+    if (isAuto) setIsSyncing(true);
+    await Promise.all(Object.values(TABS_CONFIG).map(t => fetchData(t.id, isAuto)));
+    if (isAuto) setIsSyncing(false);
+    setRefreshProgress(0);
   }, [fetchData]);
 
-  // Initial fetch
   useEffect(() => { syncAll(); }, []);
 
-  // Automatic refresh timer and progress bar
   useEffect(() => {
     const start = Date.now();
-    const intervalId = setInterval(() => {
-      const elapsed = Date.now() - start;
-      const progress = Math.min((elapsed / REFRESH_INTERVAL) * 100, 100);
-      setRefreshProgress(progress);
-      
-      if (elapsed >= REFRESH_INTERVAL) {
-        syncAll(true);
-      }
+    const interval = setInterval(() => {
+      const prog = Math.min(((Date.now() - start) / REFRESH_INTERVAL) * 100, 100);
+      setRefreshProgress(prog);
+      if (prog >= 100) syncAll(true);
     }, 1000);
-
-    return () => clearInterval(intervalId);
-  }, [syncAll, lastUpdatedMap[activeTab]]);
-
-  const applyGidFix = (tabId: string, newGid: string) => {
-    setGidOverrides(prev => ({ ...prev, [tabId]: newGid }));
-    setTimeout(() => fetchData(tabId), 10);
-  };
-
-  const handleClearFilters = () => {
-    setSelectedPlatform('All');
-    setSelectedBuild('All');
-    setStartDate('');
-    setEndDate('');
-  };
-
-  const isFiltersActive = useMemo(() => {
-    return selectedPlatform !== 'All' || selectedBuild !== 'All' || startDate !== '' || endDate !== '';
-  }, [selectedPlatform, selectedBuild, startDate, endDate]);
-
-  const handleBuildChange = (build: string) => {
-    setSelectedBuild(build);
-    if (build !== 'All') {
-      for (const data of Object.values(dataMap)) {
-        const bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a));
-        const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
-        if (bCol && pCol) {
-          const matchingRow = data.rows.find(r => String(r[bCol] || '').trim() === build);
-          if (matchingRow && matchingRow[pCol]) {
-            setSelectedPlatform(String(matchingRow[pCol]));
-            break; 
-          }
-        }
-      }
-    }
-  };
+    return () => clearInterval(interval);
+  }, [syncAll, activeTab]);
 
   const platforms = useMemo(() => {
-    const allPlatforms = new Set<string>();
-    Object.values(dataMap).forEach(data => {
-      const col = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
-      if (col) data.rows.forEach(r => r[col] && allPlatforms.add(String(r[col])));
+    const all = new Set<string>();
+    Object.values(dataMap).forEach(d => {
+      const col = PLATFORM_COL_ALIASES.find(a => d.headers.includes(a));
+      if (col) d.rows.forEach(r => r[col] && all.add(String(r[col])));
     });
-    return Array.from(allPlatforms).sort();
+    return Array.from(all).sort();
   }, [dataMap]);
 
   const builds = useMemo(() => {
-    const allBuilds = new Set<string>();
-    Object.values(dataMap).forEach(data => {
-      const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
-      const bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a));
-      if (bCol) {
-        data.rows.forEach(r => {
-          const buildVal = String(r[bCol] || '').trim();
-          if (!buildVal) return;
-          if (selectedPlatform === 'All' || (pCol && String(r[pCol]) === selectedPlatform)) {
-            allBuilds.add(buildVal);
-          }
-        });
-      }
+    const all = new Set<string>();
+    Object.values(dataMap).forEach(d => {
+      const pCol = PLATFORM_COL_ALIASES.find(a => d.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => d.headers.includes(a));
+      if (bCol) d.rows.forEach(r => {
+        if (selectedPlatform === 'All' || (pCol && String(r[pCol]) === selectedPlatform)) all.add(String(r[bCol] || '').trim());
+      });
     });
-    return Array.from(allBuilds).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    return Array.from(all).filter(Boolean).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   }, [dataMap, selectedPlatform]);
 
   const buildMetadata = useMemo(() => {
@@ -429,71 +201,29 @@ export default function App() {
     const summary = dataMap[TABS_CONFIG.SUMMARY.id];
     if (!summary) return null;
     const bCol = BUILD_COL_ALIASES.find(a => summary.headers.includes(a));
-    if (!bCol) return null;
-    const match = summary.rows.find(r => String(r[bCol]) === selectedBuild);
+    const match = summary.rows.find(r => String(r[bCol || '']) === selectedBuild);
     if (!match) return null;
-    
-    const tCol = BUILD_TYPE_COL_ALIASES.find(a => summary.headers.includes(a));
-    const dCol = DATE_COL_ALIASES.find(a => summary.headers.includes(a));
-    const sCol = BUILD_STATUS_COL_ALIASES.find(a => summary.headers.includes(a));
-    
+    const tCol = BUILD_TYPE_COL_ALIASES.find(a => summary.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => summary.headers.includes(a)), sCol = BUILD_STATUS_COL_ALIASES.find(a => summary.headers.includes(a));
     return {
-      build: String(match[bCol]),
+      build: String(match[bCol || '']),
       type: tCol ? String(match[tCol] || 'N/A') : 'N/A',
       date: dCol ? String(match[dCol] || 'N/A') : 'N/A',
       status: sCol ? String(match[sCol] || 'N/A') : 'N/A',
     };
   }, [dataMap, selectedBuild]);
 
-  const dynamicTitle = useMemo(() => {
-    if (selectedBuild !== 'All') {
-      const platformDisplay = selectedPlatform === 'All' ? 'All Platforms' : selectedPlatform;
-      return `RC Build Analytics \u00A0\u00A0 for \u00A0\u00A0${platformDisplay} - ${selectedBuild}`;
-    }
-    return 'RC Build Analytics';
-  }, [selectedBuild, selectedPlatform]);
-
-  const getBuildTypeColor = (type: string) => {
-    const t = type.toLowerCase();
-    if (t.includes('hotfix')) return 'bg-rose-600 shadow-rose-500/20';
-    if (t.includes('planned') || t.includes('release')) return 'bg-emerald-600 shadow-emerald-500/20';
-    if (t.includes('beta')) return 'bg-amber-500 shadow-amber-500/20';
-    if (t.includes('dev')) return 'bg-indigo-600 shadow-indigo-500/20';
-    return 'bg-primary-600 shadow-primary-500/20';
-  };
-
-  const getStatusColor = (status: string) => {
-    const s = status.toLowerCase();
-    if (s.includes('pass') || s.includes('fix') || s.includes('resolve') || s.includes('complete')) return 'text-emerald-500';
-    if (s.includes('fail') || s.includes('block') || s.includes('open') || s.includes('critical')) return 'text-rose-500';
-    return 'text-amber-500';
-  };
-
   const filteredRows = useMemo(() => {
-    const currentData = dataMap[activeTab];
-    if (!currentData) return [];
-    let rows = [...currentData.rows];
-    const headers = currentData.headers;
-    if (selectedPlatform !== 'All') {
-      const col = PLATFORM_COL_ALIASES.find(a => headers.includes(a));
-      if (col) rows = rows.filter(r => String(r[col]) === selectedPlatform);
-    }
-    if (selectedBuild !== 'All') {
-      const col = BUILD_COL_ALIASES.find(a => headers.includes(a));
-      if (col) rows = rows.filter(r => String(r[col]) === selectedBuild);
-    }
-    if (startDate || endDate) {
-      const dCol = DATE_COL_ALIASES.find(a => headers.includes(a));
-      if (dCol) {
-        rows = rows.filter(r => {
-          if (!r[dCol]) return false;
-          const buildDate = new Date(r[dCol]);
-          if (startDate && buildDate < new Date(startDate)) return false;
-          if (endDate && buildDate > new Date(endDate)) return false;
-          return true;
-        });
-      }
-    }
+    const data = dataMap[activeTab];
+    if (!data) return [];
+    let rows = [...data.rows];
+    const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => data.headers.includes(a));
+    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]) === selectedPlatform);
+    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]) === selectedBuild);
+    if (startDate || endDate) rows = rows.filter(r => {
+      if (!r[dCol || '']) return false;
+      const bd = new Date(r[dCol || '']);
+      return (!startDate || bd >= new Date(startDate)) && (!endDate || bd <= new Date(endDate));
+    });
     return rows;
   }, [dataMap, activeTab, selectedPlatform, selectedBuild, startDate, endDate]);
 
@@ -509,273 +239,177 @@ export default function App() {
 
   const pieData = useMemo(() => {
     if (activeTab !== TABS_CONFIG.SUMMARY.id || !filteredRows.length) return [];
-    const p = filteredRows.reduce((s, r) => s + (Number(r.Passed) || 0), 0);
-    const f = filteredRows.reduce((s, r) => s + (Number(r.Failed) || 0), 0);
-    const n = filteredRows.reduce((s, r) => s + (Number(r['Not considered']) || 0), 0);
     return [
-      { name: 'Pass', value: p, color: EXECUTION_COLORS.pass },
-      { name: 'Fail', value: f, color: EXECUTION_COLORS.fail },
-      { name: 'N/A', value: n, color: EXECUTION_COLORS.notConsidered },
+      { name: 'Pass', value: filteredRows.reduce((s, r) => s + (Number(r.Passed) || 0), 0), color: EXECUTION_COLORS.pass },
+      { name: 'Fail', value: filteredRows.reduce((s, r) => s + (Number(r.Failed) || 0), 0), color: EXECUTION_COLORS.fail },
+      { name: 'N/A', value: filteredRows.reduce((s, r) => s + (Number(r['Not considered']) || 0), 0), color: EXECUTION_COLORS.notConsidered },
     ];
   }, [filteredRows, activeTab]);
 
-  const trendData = useMemo(() => {
-    return filteredRows.slice(0, 10).reverse().map(r => ({
-      name: r['RC Build'] || r['Build'] || r['Build Version'],
-      Passed: Number(r.Passed) || 0,
-      Failed: Number(r.Failed) || 0,
-      'Not considered': Number(r['Not considered']) || 0,
-      Automation: Number(r['Automation executed'] || r['Automation']) || 0,
-      Manual: Number(r['Manual executed'] || r['Manual']) || 0,
-      Critical: Number(r['Critical Issues']) || 0,
-      Major: Number(r['Major Issues']) || 0,
-      Minor: Number(r['Minor Issues']) || 0,
-    }));
-  }, [filteredRows]);
+  const trendData = useMemo(() => filteredRows.slice(0, 10).reverse().map(r => ({
+    name: r['RC Build'] || r['Build'] || r['Build Version'],
+    Passed: Number(r.Passed) || 0,
+    Failed: Number(r.Failed) || 0,
+    Critical: Number(r['Critical Issues']) || 0,
+    Major: Number(r['Major Issues']) || 0,
+    Minor: Number(r['Minor Issues']) || 0,
+    Automation: Number(r['Automation executed'] || r['Automation']) || 0,
+    Manual: Number(r['Manual executed'] || r['Manual']) || 0,
+  })), [filteredRows]);
 
-  const hasIssuesReported = useMemo(() => {
-    return trendData.some(d => d.Critical > 0 || d.Major > 0 || d.Minor > 0);
-  }, [trendData]);
+  const renderActiveShape = (props: any) => <Sector {...props} outerRadius={props.outerRadius + 8} stroke="none" className="transition-all duration-300" />;
 
-  const barLabelProps = {
-    position: 'top' as const,
-    fontSize: 8,
-    fontWeight: '800',
-    fill: isDark ? '#94a3b8' : '#64748b',
-    offset: 8
+  const renderPieLabel = (props: any) => {
+    const { cx, cy, midAngle, outerRadius, percent, name, value, fill } = props;
+    if (percent < 0.03) return null;
+    const RADIAN = Math.PI / 180, sin = Math.sin(-RADIAN * midAngle), cos = Math.cos(-RADIAN * midAngle);
+    const sx = cx + (outerRadius + 4) * cos, sy = cy + (outerRadius + 4) * sin, mx = cx + (outerRadius + 28) * cos, my = cy + (outerRadius + 28) * sin, ex = mx + (cos >= 0 ? 1 : -1) * 20, ey = my;
+    return (
+      <g>
+        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={2} opacity={0.6} />
+        <circle cx={ex} cy={ey} r={2.5} fill={fill} />
+        <text x={ex + (cos >= 0 ? 8 : -8)} y={ey} textAnchor={cos >= 0 ? 'start' : 'end'} fill={isDark ? '#cbd5e1' : '#1e293b'} dominantBaseline="central" className="text-[11px] md:text-[12px] font-black uppercase tracking-tight">{name}: {value}</text>
+        <text x={ex + (cos >= 0 ? 8 : -8)} y={ey} dy={14} textAnchor={cos >= 0 ? 'start' : 'end'} fill={isDark ? '#64748b' : '#94a3b8'} dominantBaseline="central" className="text-[10px] md:text-[11px] font-bold">({(percent * 100).toFixed(1)}%)</text>
+      </g>
+    );
   };
 
-  const renderPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }: any) => {
-    const RADIAN = Math.PI / 180;
-    const radius = outerRadius + 18; 
-    const x = cx + radius * Math.cos(-midAngle * RADIAN);
-    const y = cy + radius * Math.sin(-midAngle * RADIAN);
-    const percentage = (percent * 100).toFixed(1);
-
-    return (
-      <text 
-        x={x} 
-        y={y} 
-        fill={isDark ? '#94a3b8' : '#64748b'} 
-        textAnchor={x > cx ? 'start' : 'end'} 
-        dominantBaseline="central"
-        className="text-[9px] font-black uppercase tracking-tighter"
-      >
-        {`${name} ${percentage}%`}
-      </text>
-    );
+  const getBuildTypeColor = (type: string) => {
+    const t = type.toLowerCase();
+    if (t.includes('hotfix')) return 'bg-rose-600';
+    if (t.includes('planned')) return 'bg-emerald-600';
+    if (t.includes('emergency')) return 'bg-orange-500';
+    if (t.includes('adhoc') || t.includes('ad-hoc')) return 'bg-amber-500';
+    if (t.includes('release')) return 'bg-primary-600';
+    return 'bg-slate-500'; 
   };
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#020617] pb-12 transition-all">
       <div className="fixed top-0 left-0 right-0 h-1 bg-slate-100 dark:bg-slate-900 z-[60] overflow-hidden">
-        <div 
-          className="h-full bg-primary-600 transition-all duration-1000 ease-linear"
-          style={{ width: `${refreshProgress}%` }}
-        />
+        <div className="h-full bg-primary-600 transition-all duration-1000 ease-linear" style={{ width: `${refreshProgress}%` }} />
       </div>
 
       <nav className="sticky top-0 z-50 glass border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 py-4 shadow-sm">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 md:gap-3 min-w-0">
-             <div className="w-8 h-8 md:w-10 md:h-10 bg-primary-600 rounded-lg md:rounded-xl flex-shrink-0 flex items-center justify-center text-white font-black text-lg md:text-xl shadow-lg shadow-primary-500/20">i</div>
-             <div className="min-w-0">
-               <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400 truncate">{dynamicTitle}</h1>
-               <div className="flex items-center gap-1.5 md:gap-2 mt-0.5">
-                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors ${isSyncingInBackground ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-                 <span className="text-[8px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate flex items-center gap-1.5">
-                   {isSyncingInBackground ? 'Syncing...' : `Synced: ${lastUpdatedMap[activeTab]?.toLocaleTimeString() || 'Waiting...'}`}
-                   {silentErrorMap[activeTab] && (
-                     <span className="text-rose-500 flex items-center gap-1" title="Background sync failed. Showing last successful data.">
-                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
-                        STALE
-                     </span>
-                   )}
-                 </span>
-               </div>
-             </div>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg shadow-primary-500/20">i</div>
+            <div className="min-w-0">
+              <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 truncate">{selectedBuild !== 'All' ? `Analytics: ${selectedBuild}` : 'RC Build Analytics'}</h1>
+              <div className="flex items-center gap-1.5 mt-0.5"><span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} /><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Synced: {lastUpdatedMap[activeTab]?.toLocaleTimeString() || 'Waiting'}</span></div>
+            </div>
           </div>
-          <div className="flex gap-2 flex-shrink-0">
-            <button onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} className="p-2 md:p-2.5 rounded-lg md:rounded-xl bg-slate-100 dark:bg-slate-800 hover:scale-105 transition-transform text-sm md:text-base">{isDark ? '☀️' : '🌙'}</button>
-            <button onClick={() => syncAll()} disabled={Object.values(loadingMap).some(v => v)} className="px-3 md:px-5 py-2 md:py-2.5 bg-primary-600 text-white rounded-lg md:rounded-xl text-[10px] md:text-xs font-black uppercase hover:bg-primary-700 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-primary-500/10">Sync</button>
+          <div className="flex gap-2">
+            <button onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:scale-105 transition-all">{isDark ? '☀️' : '🌙'}</button>
+            <button onClick={() => syncAll()} className="px-5 py-2.5 bg-primary-600 text-white rounded-xl text-[10px] font-black uppercase active:scale-95 shadow-lg shadow-primary-500/20">Sync</button>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 md:py-8 space-y-6 md:space-y-8">
-        <section className="bg-white dark:bg-slate-900 rounded-[1.5rem] md:rounded-[2rem] p-4 md:p-6 border border-slate-200 dark:border-slate-800 shadow-sm relative">
-          {isFiltersActive && (
-            <button onClick={handleClearFilters} className="absolute top-4 right-6 text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-500 transition-all flex items-center gap-1.5 active:scale-95 group">
-              <svg className="w-3.5 h-3.5 group-hover:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-              Clear Filters
-            </button>
+      <main className="max-w-7xl mx-auto px-4 md:px-8 py-8 space-y-8">
+        <section className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm relative">
+          {(selectedPlatform !== 'All' || selectedBuild !== 'All' || startDate || endDate) && (
+            <button onClick={() => { setSelectedPlatform('All'); setSelectedBuild('All'); setStartDate(''); setEndDate(''); }} className="absolute top-4 right-8 text-[10px] font-black uppercase text-slate-400 hover:text-rose-500">Reset Filters</button>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-6 mt-2">
-            <div className="space-y-1.5 md:space-y-2">
-              <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Platform</label>
-              <select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl md:rounded-2xl border-none text-[11px] md:text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
-                <option value="All">All Platforms</option>
-                {platforms.map(p => <option key={p} value={p}>{p}</option>)}
-              </select>
-            </div>
-            <div className={`space-y-1.5 md:space-y-2 transition-opacity opacity-100`}>
-              <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Build Version</label>
-              <select value={selectedBuild} onChange={e => handleBuildChange(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl md:rounded-2xl border-none text-[11px] md:text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
-                <option value="All">All Builds</option>
-                {builds.map(b => <option key={b} value={b}>{b}</option>)}
-              </select>
-            </div>
-            <div className="space-y-1.5 md:space-y-2 md:col-span-2 flex flex-col justify-end">
-              <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1 mb-0 md:mb-1">Date Range</label>
-              <div className="flex items-center gap-2">
-                <DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" />
-                <span className="text-slate-300 font-bold px-0.5 text-sm md:text-base">~</span>
-                <DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" />
-              </div>
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Platform</label><select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer">{platforms.map(p => <option key={p} value={p}>{p}</option>)}<option value="All">All Platforms</option></select></div>
+            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Build</label><select value={selectedBuild} onChange={e => setSelectedBuild(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer"><option value="All">All Builds</option>{builds.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+            <div className="md:col-span-2"><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Date Range</label><div className="flex items-center gap-2 mt-1"><DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" /><span className="text-slate-300">~</span><DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" /></div></div>
           </div>
         </section>
 
         {buildMetadata && (
-          <div className="bg-primary-600/5 dark:bg-primary-400/5 border border-primary-100 dark:border-primary-900/30 rounded-2xl md:rounded-3xl p-4 md:p-5 flex flex-wrap items-center gap-y-4 gap-x-6 md:gap-8 shadow-sm animate-in slide-in-from-top-4 duration-500">
-            <div className="flex flex-col">
-              <span className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Selected Build</span>
-              <div className="flex items-center gap-2 md:gap-3">
-                <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white">{buildMetadata.build}</span>
-                <span className={`text-white text-[8px] md:text-[9px] font-black uppercase px-2 py-0.5 md:px-2.5 md:py-1 rounded-md md:rounded-lg shadow-lg ${getBuildTypeColor(buildMetadata.type)}`}>{buildMetadata.type}</span>
-              </div>
-            </div>
-            <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden md:block"></div>
-            <div className="flex flex-col">
-              <span className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Platform</span>
-              <span className="text-xs md:text-sm font-bold text-slate-700 dark:text-slate-300">{selectedPlatform}</span>
-            </div>
-            <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden md:block"></div>
-            <div className="flex flex-col">
-              <span className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Release Date</span>
-              <span className="text-xs md:text-sm font-bold text-slate-700 dark:text-slate-300">{buildMetadata.date}</span>
-            </div>
-            <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden md:block"></div>
-            <div className="flex flex-col">
-              <span className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Build Status</span>
-              <div className="flex items-center gap-1.5 md:gap-2">
-                <span className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full animate-pulse ${getStatusColor(buildMetadata.status).replace('text', 'bg')}`}></span>
-                <span className={`text-[10px] md:text-sm font-black uppercase ${getStatusColor(buildMetadata.status)}`}>{buildMetadata.status}</span>
-              </div>
-            </div>
+          <div className="bg-primary-600/5 dark:bg-primary-400/5 border border-primary-100 dark:border-primary-900/30 rounded-[2rem] p-6 flex flex-wrap gap-8 animate-in slide-in-from-top-4">
+            <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Build Version</span><div className="flex items-center gap-3"><span className="text-base font-black text-slate-900 dark:text-white">{buildMetadata.build}</span><span className={`text-white text-[10px] font-black uppercase px-2.5 py-1 rounded-lg ${getBuildTypeColor(buildMetadata.type)} shadow-sm transition-colors duration-300`}>{buildMetadata.type}</span></div></div>
+            <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Date</span><span className="text-sm font-bold text-slate-700 dark:text-slate-300">{buildMetadata.date}</span></div>
+            <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Status</span><span className={`text-sm font-black uppercase ${buildMetadata.status.toLowerCase().includes('pass') ? 'text-emerald-500' : 'text-rose-500'}`}>{buildMetadata.status}</span></div>
           </div>
         )}
 
-        <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-[1rem] md:rounded-[1.5rem] w-full md:w-auto overflow-x-auto no-scrollbar shadow-inner gap-1">
-          {Object.values(TABS_CONFIG).map((tab) => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`px-4 md:px-6 py-2.5 md:py-3 rounded-lg md:rounded-2xl text-[9px] md:text-[11px] font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 active:scale-95 ${activeTab === tab.id ? 'bg-white dark:bg-slate-800 text-primary-600 shadow-md' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'}`}>
-              <span className="text-sm md:text-base">{tab.icon}</span>{tab.label}
-              {errorMap[tab.id] && <span className="text-rose-500 animate-pulse">!</span>}
-            </button>
+        <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-[1.8rem] w-full md:w-auto overflow-x-auto gap-1 shadow-inner">
+          {Object.values(TABS_CONFIG).map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`px-8 py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 ${activeTab === tab.id ? 'bg-white dark:bg-slate-800 text-primary-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}><span>{tab.icon}</span>{tab.label}</button>
           ))}
         </div>
 
         {activeTab === 'summary' ? (
-          <div className="space-y-6 md:space-y-8 animate-in fade-in duration-500">
+          <div className="space-y-8 animate-in fade-in duration-500">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <MetricCard title="Total Testcases" value={summaryStats?.total || 0} icon="🎯" />
+              <MetricCard title="Total Cases" value={summaryStats?.total || 0} icon="🎯" />
               <MetricCard title="Executed" value={summaryStats?.executed || 0} icon="⚡" />
               <MetricCard title="Pass Rate" value={`${summaryStats?.executed ? ((summaryStats.passed / summaryStats.executed) * 100).toFixed(1) : 0}%`} icon="✅" />
-              <MetricCard title="Critical Issues" value={summaryStats?.critical || 0} icon="🌋" />
+              <MetricCard title="Critical" value={summaryStats?.critical || 0} icon="🌋" />
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 md:gap-8">
-              <Card 
-                title="Result Distribution" 
-                error={errorMap[activeTab]} 
-                loading={loadingMap[activeTab]} 
-                discoveryLoading={discoveryLoadingMap[activeTab]}
-                suggestedGid={suggestedGidMap[activeTab]}
-                onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
-                onRetry={() => fetchData(activeTab)}
-                tabId={activeTab}
-              >
-                <div className="h-[250px] md:h-[300px] relative">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+              <Card title="Distribution" loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)}>
+                <div className="h-[320px] relative">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
+                    <PieChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
                       <Pie 
+                        {...({ activeIndex, activeShape: renderActiveShape } as any)} 
                         data={pieData} 
                         cx="50%" 
                         cy="50%" 
-                        innerRadius={60} 
-                        outerRadius={75} 
-                        paddingAngle={6} 
-                        dataKey="value"
-                        label={renderPieLabel}
-                        labelLine={true}
-                        minAngle={10}
+                        innerRadius={68} 
+                        outerRadius={85} 
+                        paddingAngle={5} 
+                        dataKey="value" 
+                        label={renderPieLabel} 
+                        labelLine={false} 
+                        onMouseEnter={(_, i) => setActiveIndex(i)} 
+                        onMouseLeave={() => setActiveIndex(-1)}
                       >
                         {pieData.map((e, i) => <Cell key={i} fill={e.color} stroke="none" />)}
                       </Pie>
-                      <Tooltip content={<CustomTooltip />} />
+                      <Tooltip content={<CustomTooltip />} offset={30} wrapperStyle={{ zIndex: 1000 }} />
                     </PieChart>
                   </ResponsiveContainer>
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
-                    <div className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest">Aggregate</div>
-                    <div className="text-lg md:text-2xl font-black text-slate-900 dark:text-white">{pieData.reduce((s,c) => s+c.value, 0)}</div>
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-[50]">
+                    <div className="text-[11px] font-black text-slate-400 uppercase mb-1 tracking-widest leading-none">Total</div>
+                    <div className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white leading-tight">{pieData.reduce((s, c) => s + c.value, 0)}</div>
                   </div>
                 </div>
               </Card>
 
-              <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
-                 <Card 
-                  title="Issue Severity Trend" 
-                  error={errorMap[activeTab]} 
-                  loading={loadingMap[activeTab]}
-                  discoveryLoading={discoveryLoadingMap[activeTab]}
-                  suggestedGid={suggestedGidMap[activeTab]}
-                  onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
-                  onRetry={() => fetchData(activeTab)}
-                  tabId={activeTab}
-                >
-                  <div className="h-[250px] md:h-[300px]">
-                    {hasIssuesReported ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={trendData} margin={{ top: 15, right: 10, left: -20, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                          <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                          <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                          <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
-                          <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12}><LabelList {...barLabelProps} /></Bar>
-                          <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12}><LabelList {...barLabelProps} /></Bar>
-                          <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12}><LabelList {...barLabelProps} /></Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex flex-col items-center justify-center h-full text-center space-y-4 animate-in fade-in zoom-in duration-500">
-                        <div className="w-16 h-16 bg-emerald-50 dark:bg-emerald-950/20 rounded-full flex items-center justify-center text-3xl shadow-sm border border-emerald-100 dark:border-emerald-900/30">🎉</div>
-                        <p className="text-[10px] md:text-xs font-black uppercase text-slate-400 tracking-[0.2em] max-w-[200px] leading-relaxed">No issues reported in this build</p>
-                      </div>
-                    )}
+              <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <Card title="Issue Trend" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
+                  <div className="h-[320px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={trendData} margin={{ top: 25, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '25px', fontSize: '11px', fontWeight: '800' }} />
+                        <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[6, 6, 0, 0]} barSize={14}>
+                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        </Bar>
+                        <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[6, 6, 0, 0]} barSize={14}>
+                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        </Bar>
+                        <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[6, 6, 0, 0]} barSize={14}>
+                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
                   </div>
                 </Card>
-
-                <Card 
-                  title="Testing Methodology Trend" 
-                  error={errorMap[activeTab]} 
-                  loading={loadingMap[activeTab]}
-                  discoveryLoading={discoveryLoadingMap[activeTab]}
-                  suggestedGid={suggestedGidMap[activeTab]}
-                  onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
-                  onRetry={() => fetchData(activeTab)}
-                  tabId={activeTab}
-                >
-                  <div className="h-[250px] md:h-[300px]">
+                <Card title="Methodology" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
+                  <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 15, right: 10, left: -20, bottom: 0 }}>
+                      <BarChart data={trendData} margin={{ top: 25, right: 10, left: -20, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
-                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={14}><LabelList {...barLabelProps} /></Bar>
-                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={14}><LabelList {...barLabelProps} /></Bar>
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '25px', fontSize: '11px', fontWeight: '800' }} />
+                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[6, 6, 0, 0]} barSize={16}>
+                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        </Bar>
+                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[6, 6, 0, 0]} barSize={16}>
+                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        </Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -783,104 +417,64 @@ export default function App() {
               </div>
             </div>
 
-            <Card 
-              title="Execution Matrix" 
-              error={errorMap[activeTab]} 
-              loading={loadingMap[activeTab]}
-              discoveryLoading={discoveryLoadingMap[activeTab]}
-              suggestedGid={suggestedGidMap[activeTab]}
-              onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
-              onRetry={() => fetchData(activeTab)}
-              tabId={activeTab}
-            >
-              <div className="overflow-x-auto no-scrollbar scroll-smooth">
+            <Card title="Execution Matrix">
+              <div className="overflow-x-auto no-scrollbar custom-scrollbar">
                 <table className="w-full text-left min-w-[900px]">
-                  <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 z-10">
+                  <thead className="bg-slate-50 dark:bg-slate-800/50">
                     <tr>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">RC Version</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Total</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Passed</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Failed</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">N/A</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Auto</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Man</th>
-                      <th className="px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-400 text-right">Defects</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-left">Build Version</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Total Test Cases</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Passed Cases</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Failed Cases</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right whitespace-nowrap">Not Considered</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Automation</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Manual</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Issue Severity</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredRows.length > 0 ? filteredRows.map((row, idx) => (
+                    {filteredRows.map((row, idx) => (
                       <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
-                        <td className="px-4 py-4">
-                          <div className="text-[11px] md:text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">{row['RC Build'] || row['Build'] || row['Build Version']}</div>
-                          <div className="text-[8px] text-slate-400 font-bold uppercase mt-0.5 tracking-widest">{row.Platform || row.OS} • {row['Build Date'] || row['Date'] || 'N/A'}</div>
+                        <td className="px-6 py-5">
+                          <div className="text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">
+                            {row['RC Build'] || row['Build']}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-tight">
+                            {row.Platform} • {row['Build Date']}
+                          </div>
                         </td>
-                        <td className="px-4 py-4 text-[10px] md:text-xs font-black text-slate-500">{row['Total Test Cases'] || 0}</td>
-                        <td className="px-4 py-4 text-[10px] md:text-xs font-black text-emerald-600 dark:text-emerald-400">{row['Passed'] || 0}</td>
-                        <td className="px-4 py-4 text-[10px] md:text-xs font-black text-rose-500">{row['Failed'] || 0}</td>
-                        <td className="px-4 py-4 text-[10px] md:text-xs font-black text-slate-400">{row['Not considered'] || 0}</td>
-                        <td className="px-4 py-4 text-[10px] md:text-xs font-black text-violet-500">{row['Automation executed'] || row['Automation'] || 0}</td>
-                        <td className="px-4 py-4 text-[10px] md:text-xs font-black text-pink-500">{row['Manual executed'] || row['Manual'] || 0}</td>
-                        <td className="px-4 py-4 text-right">
-                          <div className="flex items-center justify-end gap-1">
+                        <td className="px-6 py-5 text-xs font-black text-slate-500 text-right">{row['Total Test Cases'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-emerald-600 text-right">{row['Passed'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-slate-400 text-right">{row['Not considered'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-violet-500 text-right">{row['Automation'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-pink-500 text-right">{row['Manual'] || 0}</td>
+                        <td className="px-6 py-5">
+                          <div className="flex gap-1.5 justify-end">
                             <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" />
                             <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" />
                             <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" />
                           </div>
                         </td>
                       </tr>
-                    )) : (
-                      <tr><td colSpan={8} className="px-4 py-16 text-center text-slate-400 font-black uppercase tracking-widest opacity-30 text-[10px]">No matching records</td></tr>
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
             </Card>
           </div>
         ) : (
-          <Card 
-            title={activeTab === 'new_issues' ? 'Issue Backlog' : 'Validation Queue'} 
-            error={errorMap[activeTab]} 
-            loading={loadingMap[activeTab]} 
-            discoveryLoading={discoveryLoadingMap[activeTab]}
-            suggestedGid={suggestedGidMap[activeTab]}
-            onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
-            onRetry={() => fetchData(activeTab)}
-            tabId={activeTab}
-          >
-            <div className="overflow-x-auto no-scrollbar scroll-smooth">
-              <table className="w-full text-left min-w-[800px]">
-                <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800/50">
-                    {dataMap[activeTab]?.headers.map((h, i) => (
-                      <th key={i} className="px-4 py-3.5 text-[9px] font-black uppercase text-slate-400 whitespace-nowrap">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {filteredRows.map((row, i) => (
-                    <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                      {dataMap[activeTab]?.headers.map((h, j) => {
-                        const val = row[h];
-                        const isStatus = h.toLowerCase().includes('status');
-                        return (
-                          <td key={j} className="px-4 py-3.5">
-                            {isStatus ? (
-                              <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-md shadow-sm whitespace-nowrap ${
-                                String(val).toLowerCase().includes('pass') || String(val).toLowerCase().includes('fixed') || String(val).toLowerCase().includes('resolved')
-                                ? 'bg-emerald-500 text-white' : String(val).toLowerCase().includes('fail') || String(val).toLowerCase().includes('open') || String(val).toLowerCase().includes('block')
-                                ? 'bg-rose-500 text-white' : 'bg-slate-400 text-white'
-                              }`}>{val || 'PENDING'}</span>
-                            ) : (
-                              <div className="text-[10px] font-bold text-slate-600 dark:text-slate-300 line-clamp-2">{val || '-'}</div>
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
+          <Card title={activeTab === 'new_issues' ? 'Issue Backlog' : 'Validation Queue'} loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)}>
+            <div className="overflow-x-auto no-scrollbar custom-scrollbar"><table className="w-full text-left min-w-[800px]">
+              <thead><tr className="bg-slate-50 dark:bg-slate-800/50">{dataMap[activeTab]?.headers.map((h, i) => <th key={i} className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider">{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{filteredRows.map((row, i) => (
+                <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                  {dataMap[activeTab]?.headers.map((h, j) => (
+                    <td key={j} className="px-6 py-5">{h.toLowerCase().includes('status') ? <span className="text-[10px] font-black uppercase px-3 py-1.5 rounded-xl bg-emerald-500 text-white shadow-sm">{row[h] || 'PENDING'}</span> : <div className="text-[12px] font-bold text-slate-600 dark:text-slate-300 leading-relaxed">{row[h] || '-'}</div>}</td>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </tr>
+              ))}</tbody>
+            </table></div>
           </Card>
         )}
       </main>
@@ -890,62 +484,22 @@ export default function App() {
 
 function MetricCard({ title, value, icon }: MetricCardProps) {
   return (
-    <div className="bg-white dark:bg-slate-900 p-5 md:p-7 rounded-[1.5rem] md:rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group hover:-translate-y-1 transition-all duration-300">
-      <div className="absolute top-0 right-0 p-3 md:p-4 opacity-5 group-hover:opacity-20 transition-all rotate-12"><span className="text-4xl md:text-6xl">{icon}</span></div>
-      <span className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 md:mb-2">{title}</span>
-      <div className="text-xl md:text-3xl font-black text-slate-900 dark:text-white tracking-tight">{value}</div>
+    <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm relative group hover:-translate-y-1 transition-all duration-300">
+      <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-20 transition-all rotate-12 text-6xl pointer-events-none">{icon}</div>
+      <span className="text-[11px] font-black text-slate-400 uppercase mb-2 block tracking-widest">{title}</span>
+      <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{value}</div>
     </div>
   );
 }
 
-function Card({ title, children, loading, discoveryLoading, error, suggestedGid, onRetry, onApplyFix, tabId }: CardProps) {
+function Card({ title, children, loading, error, onRetry }: CardProps) {
   return (
-    <div className="bg-white dark:bg-slate-900 rounded-[1.5rem] md:rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col min-h-[300px] md:min-h-[350px]">
-      <div className="px-6 md:px-8 py-4 md:py-5 border-b border-slate-50 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30">
-        <h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.2em] md:tracking-[0.25em] text-slate-400">{title}</h3>
-      </div>
-      <div className="p-4 md:p-8 flex-1 relative flex flex-col">
-        {(loading || discoveryLoading) && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm">
-             <div className="flex flex-col items-center gap-4">
-               <div className="w-8 h-8 md:w-12 md:h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
-               {discoveryLoading && <span className="text-[10px] font-black uppercase text-primary-600 animate-pulse tracking-widest">Searching for correct tab...</span>}
-             </div>
-          </div>
-        )}
+    <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col min-h-[380px]">
+      <div className="px-8 py-6 border-b border-slate-50 dark:bg-slate-800/30"><h3 className="text-[12px] font-black uppercase tracking-widest text-slate-400">{title}</h3></div>
+      <div className="p-8 flex-1 relative flex flex-col">
+        {loading && <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm"><div className="w-12 h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin" /></div>}
         {error ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-4 md:py-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <div className="w-12 h-12 md:w-16 md:h-16 bg-rose-50 dark:bg-rose-950/20 rounded-2xl flex items-center justify-center text-rose-500 text-2xl md:text-3xl shadow-sm">⚠️</div>
-            <div className="max-w-xs md:max-w-md px-4">
-              <h4 className="text-[10px] md:text-xs font-black uppercase text-rose-600 mb-2 tracking-widest">Sync Failure</h4>
-              <p className="text-[10px] md:text-[11px] font-bold text-slate-500 dark:text-slate-400 leading-relaxed italic mb-6 md:mb-8 line-clamp-3">{error}</p>
-              
-              <div className="bg-slate-50 dark:bg-slate-800/50 p-4 md:p-6 rounded-2xl md:rounded-3xl border border-slate-100 dark:border-slate-800 text-left">
-                <p className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 mb-3 md:mb-4 border-b pb-2 tracking-widest">Remediation</p>
-                <ul className="text-[9px] md:text-[10px] font-bold text-slate-500 space-y-2 mb-6 md:mb-8">
-                  <li className="flex gap-2"><span>1.</span><span>Verify the Google Sheet is "Published to the web" (CSV)</span></li>
-                  <li className="flex gap-2"><span>2.</span><span>Confirm tab names match: "{Object.values(TABS_CONFIG).find(t => t.id === tabId)?.label || 'Required Tab'}"</span></li>
-                </ul>
-                
-                {suggestedGid ? (
-                  <div className="bg-primary-50 dark:bg-primary-950/30 p-3 md:p-4 rounded-xl md:rounded-2xl border border-primary-100 dark:border-primary-900/50 animate-in zoom-in duration-500">
-                    <p className="text-[9px] md:text-[10px] font-black text-primary-700 dark:text-primary-400 mb-2 md:mb-3 uppercase tracking-tighter flex items-center gap-2">
-                       <span className="w-1.5 h-1.5 bg-primary-500 rounded-full animate-pulse"></span>
-                       Potential Fix Found (GID: <span className="font-mono">{suggestedGid}</span>)
-                    </p>
-                    <button 
-                      onClick={() => onApplyFix?.(suggestedGid)}
-                      className="w-full bg-primary-600 text-white py-2 md:py-2.5 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/10 active:scale-95"
-                    >
-                      Apply Fix & Sync
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={onRetry} className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-2.5 md:py-3 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-[0.98]">Manual Retry</button>
-                )}
-              </div>
-            </div>
-          </div>
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-8 animate-in fade-in"><div className="w-16 h-16 bg-rose-50 rounded-2xl flex items-center justify-center text-rose-500 text-3xl">⚠️</div><p className="text-[12px] font-bold text-slate-500">{error}</p><button onClick={onRetry} className="w-full bg-slate-900 text-white py-3.5 rounded-2xl text-[11px] font-black uppercase tracking-widest active:scale-95 transition-all">Retry</button></div>
         ) : children}
       </div>
     </div>
@@ -954,20 +508,11 @@ function Card({ title, children, loading, discoveryLoading, error, suggestedGid,
 
 function Badge({ value, color, label, size = 'md' }: BadgeProps) {
   const v = (!value || value === 0 || value === "" || isNaN(value)) ? '-' : value;
-  const sizeClasses = size === 'sm' ? 'w-5 h-5 md:w-6 md:h-6 text-[8px] md:text-[9px]' : 'w-7 h-7 md:w-8 md:h-8 text-[10px] md:text-[11px]';
-  
-  const tooltipContent = v === '-' 
-    ? `No ${label} Issues Reported` 
-    : `${v} ${label} Issue${v === 1 ? '' : 's'}`;
-
+  const s = size === 'sm' ? 'w-8 h-8 text-[11px]' : 'w-10 h-10 text-[13px]';
   return (
     <div className="relative group/badge inline-block">
-      <div className={`${sizeClasses} rounded-md md:rounded-lg flex items-center justify-center font-black transition-all hover:scale-110 cursor-help ${v === '-' ? 'bg-slate-100 dark:bg-slate-800 text-slate-300 dark:text-slate-600' : `${color} text-white shadow-sm shadow-black/10`}`}>{v}</div>
-      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 px-3.5 py-2 bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[9px] md:text-[10px] font-black uppercase tracking-widest rounded-xl opacity-0 scale-90 group-hover/badge:opacity-100 group-hover/badge:scale-100 pointer-events-none transition-all duration-300 ease-out whitespace-nowrap z-[100] shadow-2xl border border-white/10 dark:border-slate-200 origin-bottom flex items-center gap-2.5">
-        <span className={`w-2 h-2 rounded-full ring-2 ring-white/10 dark:ring-slate-200/50 ${v === '-' ? 'bg-slate-400' : color}`}></span>
-        {tooltipContent}
-        <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1.5 border-[6px] border-transparent border-t-slate-900 dark:border-t-white drop-shadow-xl"></div>
-      </div>
+      <div className={`${s} rounded-lg flex items-center justify-center font-black transition-all hover:scale-110 cursor-help ${v === '-' ? 'bg-slate-100 text-slate-300 dark:bg-slate-800 dark:text-slate-600' : `${color} text-white shadow-sm`}`}>{v}</div>
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 px-4 py-2 bg-slate-900 text-white text-[11px] font-black uppercase tracking-widest rounded-xl opacity-0 group-hover/badge:opacity-100 pointer-events-none transition-all duration-300 shadow-2xl z-[150] whitespace-nowrap">{v === '-' ? `No ${label}` : `${v} ${label}`}</div>
     </div>
   );
 }
