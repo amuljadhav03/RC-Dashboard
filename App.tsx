@@ -348,6 +348,13 @@ export default function App() {
     };
   }, [dataMap, selectedBuild]);
 
+  const dynamicTitle = useMemo(() => {
+    if (selectedBuild !== 'All' && selectedPlatform !== 'All') {
+      return `RC Build Analytics for ${selectedPlatform} - ${selectedBuild}`;
+    }
+    return 'RC Build Analytics';
+  }, [selectedBuild, selectedPlatform]);
+
   const getBuildTypeColor = (type: string) => {
     const t = type.toLowerCase();
     if (t.includes('hotfix')) return 'bg-rose-600 shadow-rose-500/20';
@@ -436,7 +443,7 @@ export default function App() {
           <div className="flex items-center gap-2 md:gap-3 min-w-0">
              <div className="w-8 h-8 md:w-10 md:h-10 bg-primary-600 rounded-lg md:rounded-xl flex-shrink-0 flex items-center justify-center text-white font-black text-lg md:text-xl shadow-lg shadow-primary-500/20">i</div>
              <div className="min-w-0">
-               <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400 truncate">RC Build Analytics</h1>
+               <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400 truncate">{dynamicTitle}</h1>
                <div className="flex items-center gap-1.5 md:gap-2 mt-0.5">
                  <span className={`w-1 h-1 md:w-1.5 md:h-1.5 rounded-full flex-shrink-0 ${Object.values(loadingMap).some(v => v) ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
                  <span className="text-[8px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">
