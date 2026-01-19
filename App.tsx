@@ -437,7 +437,7 @@ export default function App() {
           <div className="flex items-center gap-3">
              <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg shadow-primary-500/20">i</div>
              <div>
-               <h1 className="text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400">Execution Portal</h1>
+               <h1 className="text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400">RC Build Analytics</h1>
                <div className="flex items-center gap-2 mt-0.5">
                  <span className={`w-1.5 h-1.5 rounded-full ${Object.values(loadingMap).some(v => v) ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
