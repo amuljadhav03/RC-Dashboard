@@ -66,8 +66,10 @@ const CustomTooltip = ({ active, payload, label }: any) => {
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5 border-b border-slate-50 dark:border-slate-800 pb-1.5">{title}</p>
       <div className="space-y-1.5">
         {payload.map((entry: any, index: number) => {
-          const isPie = entry.payload?.percent !== undefined || entry.percent !== undefined;
+          // Accurate percentage for Pie slices
           const percent = entry.payload?.percent !== undefined ? entry.payload.percent : entry.percent;
+          const hasPercent = percent !== undefined && !isNaN(percent);
+
           return (
             <div key={index} className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-2">
@@ -76,7 +78,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-[11px] font-black text-slate-900 dark:text-white">{entry.value}</span>
-                {isPie && percent !== undefined && (
+                {hasPercent && (
                   <span className="text-[9px] font-black text-primary-500 bg-primary-50 dark:bg-primary-900/30 px-2 py-0.5 rounded-md">
                     {(percent * 100).toFixed(1)}%
                   </span>
@@ -255,40 +257,49 @@ export default function App() {
     ];
   }, [filteredRows, activeTab]);
 
-  const trendData = useMemo(() => filteredRows.slice(0, 10).reverse().map(r => ({
-    name: String(r['RC Build'] || r['Build'] || r['Build Version']).split(' ').pop() || '',
-    fullName: r['RC Build'] || r['Build'] || r['Build Version'],
-    Passed: Number(r.Passed) || 0,
-    Failed: Number(r.Failed) || 0,
-    Critical: Number(r['Critical Issues']) || 0,
-    Major: Number(r['Major Issues']) || 0,
-    Minor: Number(r['Minor Issues']) || 0,
-    Automation: Number(r['Automation executed'] || r['Automation']) || 0,
-    Manual: Number(r['Manual executed'] || r['Manual']) || 0,
-  })), [filteredRows]);
+  const trendData = useMemo(() => filteredRows.slice(0, 10).reverse().map(r => {
+    const rawName = String(r['RC Build'] || r['Build'] || r['Build Version']);
+    // Extract short name (last part) for axis, full name for tooltip
+    const shortName = rawName.split(' ').pop() || '';
+    return {
+      name: shortName,
+      fullName: rawName,
+      Passed: Number(r.Passed) || 0,
+      Failed: Number(r.Failed) || 0,
+      Critical: Number(r['Critical Issues']) || 0,
+      Major: Number(r['Major Issues']) || 0,
+      Minor: Number(r['Minor Issues']) || 0,
+      Automation: Number(r['Automation executed'] || r['Automation']) || 0,
+      Manual: Number(r['Manual executed'] || r['Manual']) || 0,
+    };
+  }), [filteredRows]);
 
   const renderActiveShape = (props: any) => <Sector {...props} outerRadius={props.outerRadius + 8} stroke="none" className="transition-all duration-300" />;
 
   const renderPieLabel = (props: any) => {
     const { cx, cy, midAngle, outerRadius, percent, name, value, fill } = props;
-    if (percent < 0.05) return null; // Hide very small segment labels to avoid clutter
+    // Hide labels for extremely small slices to prevent overlap
+    if (percent < 0.05) return null; 
     
     const RADIAN = Math.PI / 180;
     const sin = Math.sin(-RADIAN * midAngle);
     const cos = Math.cos(-RADIAN * midAngle);
     
-    // Position labels significantly outside to avoid center overlap
-    const sx = cx + (outerRadius + 8) * cos;
-    const sy = cy + (outerRadius + 8) * sin;
-    const mx = cx + (outerRadius + 30) * cos;
-    const my = cy + (outerRadius + 30) * sin;
-    const ex = mx + (cos >= 0 ? 1 : -1) * 12;
+    // Significantly outside the outerRadius to avoid overlap with center text
+    const labelDistance = outerRadius + 15;
+    const lineDistance = outerRadius + 35;
+
+    const sx = cx + (outerRadius + 5) * cos;
+    const sy = cy + (outerRadius + 5) * sin;
+    const mx = cx + labelDistance * cos;
+    const my = cy + labelDistance * sin;
+    const ex = mx + (cos >= 0 ? 1 : -1) * 15;
     const ey = my;
     const textAnchor = cos >= 0 ? 'start' : 'end';
 
     return (
       <g>
-        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} opacity={0.5} />
+        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} opacity={0.4} />
         <circle cx={ex} cy={ey} r={2} fill={fill} />
         <text 
           x={ex + (cos >= 0 ? 6 : -6)} 
@@ -398,16 +409,16 @@ export default function App() {
 
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
               <Card title="Distribution" loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)}>
-                <div className="h-[320px] relative">
+                <div className="h-[340px] relative">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                    <PieChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                       <Pie 
                         {...({ activeIndex, activeShape: renderActiveShape } as any)} 
                         data={pieData} 
                         cx="50%" 
                         cy="50%" 
-                        innerRadius={50} // Reduced inner radius to give more space for total text
-                        outerRadius={70} // Reduced outer radius to give more space for labels
+                        innerRadius={55} 
+                        outerRadius={75} 
                         paddingAngle={5} 
                         dataKey="value" 
                         label={renderPieLabel} 
@@ -422,7 +433,9 @@ export default function App() {
                   </ResponsiveContainer>
                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-[50]">
                     <div className="text-[10px] font-black text-slate-400 uppercase mb-0.5 tracking-widest leading-none">Total</div>
-                    <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">{pieData.reduce((s, c) => s + c.value, 0)}</div>
+                    <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">
+                      {pieData.reduce((s, c) => s + c.value, 0)}
+                    </div>
                   </div>
                 </div>
               </Card>
@@ -431,20 +444,20 @@ export default function App() {
                 <Card title="Issue Trend" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 30, right: 10, left: -25, bottom: 5 }}>
+                      <BarChart data={trendData} margin={{ top: 40, right: 10, left: -25, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
                         <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '30px', fontSize: '10px', fontWeight: '800' }} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '35px', fontSize: '10px', fontWeight: '800' }} />
                         <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
                         </Bar>
                         <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
                         </Bar>
                         <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -453,17 +466,17 @@ export default function App() {
                 <Card title="Methodology" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 30, right: 10, left: -25, bottom: 5 }}>
+                      <BarChart data={trendData} margin={{ top: 40, right: 10, left: -25, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
                         <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '30px', fontSize: '10px', fontWeight: '800' }} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '35px', fontSize: '10px', fontWeight: '800' }} />
                         <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
                         </Bar>
                         <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -474,18 +487,18 @@ export default function App() {
 
             <Card title="Execution Matrix">
               <div className="overflow-x-auto no-scrollbar custom-scrollbar">
-                <table className="w-full text-left min-w-[1000px]">
+                <table className="w-full text-left min-w-[1200px]">
                   <thead className="bg-slate-50 dark:bg-slate-800/50">
                     <tr>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-left">Build Version</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-center">Overall Status</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Total Test Cases</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Passed Cases</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Failed Cases</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right whitespace-nowrap">Not Considered</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Automation</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Manual</th>
-                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Issue Severity</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-left border-b border-slate-100 dark:border-slate-800">Release Candidate Build</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-center border-b border-slate-100 dark:border-slate-800">Overall Status</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Total Test Cases</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Passed Cases</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Failed Cases</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Cases Not Considered</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Automation Executed</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Manual Executed</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right border-b border-slate-100 dark:border-slate-800">Issue Severity Breakdown</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
