@@ -66,6 +66,29 @@ interface DateSelectorProps {
   placeholder?: string;
 }
 
+// --- CUSTOM TOOLTIP COMPONENT ---
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white dark:bg-slate-800 p-4 border border-slate-100 dark:border-slate-700 shadow-2xl rounded-2xl animate-in fade-in zoom-in-95 duration-200">
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 border-b border-slate-50 dark:border-slate-700 pb-2">{label}</p>
+        <div className="space-y-1.5">
+          {payload.map((entry: any, index: number) => (
+            <div key={index} className="flex items-center justify-between gap-8">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></div>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{entry.name}</span>
+              </div>
+              <span className="text-xs font-black text-slate-900 dark:text-white">{entry.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
 // --- CALENDAR COMPONENT ---
 function CalendarPopover({ value, onSelect, onClose }: { value: string, onSelect: (val: string) => void, onClose: () => void }) {
   const [viewDate, setViewDate] = useState(() => value ? new Date(value) : new Date());
@@ -290,6 +313,35 @@ export default function App() {
     setTimeout(() => fetchData(tabId), 10);
   };
 
+  const handleClearFilters = () => {
+    setSelectedPlatform('All');
+    setSelectedBuild('All');
+    setStartDate('');
+    setEndDate('');
+  };
+
+  const isFiltersActive = useMemo(() => {
+    return selectedPlatform !== 'All' || selectedBuild !== 'All' || startDate !== '' || endDate !== '';
+  }, [selectedPlatform, selectedBuild, startDate, endDate]);
+
+  const handleBuildChange = (build: string) => {
+    setSelectedBuild(build);
+    if (build !== 'All') {
+      // Cross-reference data to automatically select the platform for this build
+      for (const data of Object.values(dataMap)) {
+        const bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a));
+        const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
+        if (bCol && pCol) {
+          const matchingRow = data.rows.find(r => String(r[bCol] || '').trim() === build);
+          if (matchingRow && matchingRow[pCol]) {
+            setSelectedPlatform(String(matchingRow[pCol]));
+            break; 
+          }
+        }
+      }
+    }
+  };
+
   const syncAll = useCallback(async () => {
     await Promise.all(Object.values(TABS_CONFIG).map(tab => fetchData(tab.id)));
   }, [fetchData]);
@@ -313,14 +365,20 @@ export default function App() {
   }, [dataMap]);
 
   const builds = useMemo(() => {
-    if (selectedPlatform === 'All') return [];
     const allBuilds = new Set<string>();
     Object.values(dataMap).forEach(data => {
       const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
       const bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a));
-      if (pCol && bCol) {
+      if (bCol) {
         data.rows.forEach(r => {
-          if (String(r[pCol]) === selectedPlatform && r[bCol]) allBuilds.add(String(r[bCol]));
+          const buildVal = String(r[bCol] || '').trim();
+          if (!buildVal) return;
+          
+          if (selectedPlatform === 'All') {
+            allBuilds.add(buildVal);
+          } else if (pCol && String(r[pCol]) === selectedPlatform) {
+            allBuilds.add(buildVal);
+          }
         });
       }
     });
@@ -349,8 +407,9 @@ export default function App() {
   }, [dataMap, selectedBuild]);
 
   const dynamicTitle = useMemo(() => {
-    if (selectedBuild !== 'All' && selectedPlatform !== 'All') {
-      return `RC Build Analytics for ${selectedPlatform} - ${selectedBuild}`;
+    if (selectedBuild !== 'All') {
+      const platformDisplay = selectedPlatform === 'All' ? 'All Platforms' : selectedPlatform;
+      return `RC Build Analytics for \u00A0\u00A0${platformDisplay} - ${selectedBuild}`;
     }
     return 'RC Build Analytics';
   }, [selectedBuild, selectedPlatform]);
@@ -461,27 +520,41 @@ export default function App() {
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 md:py-8 space-y-6 md:space-y-8">
         {/* FILTERS */}
-        <section className="bg-white dark:bg-slate-900 rounded-[1.5rem] md:rounded-[2rem] p-4 md:p-6 border border-slate-200 dark:border-slate-800 shadow-sm grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-6">
-          <div className="space-y-1.5 md:space-y-2">
-            <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Platform</label>
-            <select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl md:rounded-2xl border-none text-[11px] md:text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
-              <option value="All">All Platforms</option>
-              {platforms.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div className={`space-y-1.5 md:space-y-2 transition-opacity ${selectedPlatform === 'All' ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-            <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Build Version</label>
-            <select value={selectedBuild} onChange={e => setSelectedBuild(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl md:rounded-2xl border-none text-[11px] md:text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
-              <option value="All">All Builds</option>
-              {builds.map(b => <option key={b} value={b}>{b}</option>)}
-            </select>
-          </div>
-          <div className="space-y-1.5 md:space-y-2 md:col-span-2 flex flex-col justify-end">
-            <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1 mb-0 md:mb-1">Date Range</label>
-            <div className="flex items-center gap-2">
-              <DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" />
-              <span className="text-slate-300 font-bold px-0.5 text-sm md:text-base">~</span>
-              <DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" />
+        <section className="bg-white dark:bg-slate-900 rounded-[1.5rem] md:rounded-[2rem] p-4 md:p-6 border border-slate-200 dark:border-slate-800 shadow-sm relative">
+          {isFiltersActive && (
+            <button 
+              onClick={handleClearFilters}
+              className="absolute top-4 right-6 text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-500 transition-all flex items-center gap-1.5 active:scale-95 group"
+            >
+              <svg className="w-3.5 h-3.5 group-hover:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              Clear Filters
+            </button>
+          )}
+          
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-6 mt-2">
+            <div className="space-y-1.5 md:space-y-2">
+              <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Platform</label>
+              <select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl md:rounded-2xl border-none text-[11px] md:text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
+                <option value="All">All Platforms</option>
+                {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div className={`space-y-1.5 md:space-y-2 transition-opacity opacity-100`}>
+              <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Build Version</label>
+              <select value={selectedBuild} onChange={e => handleBuildChange(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl md:rounded-2xl border-none text-[11px] md:text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
+                <option value="All">All Builds</option>
+                {builds.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1.5 md:space-y-2 md:col-span-2 flex flex-col justify-end">
+              <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1 mb-0 md:mb-1">Date Range</label>
+              <div className="flex items-center gap-2">
+                <DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" />
+                <span className="text-slate-300 font-bold px-0.5 text-sm md:text-base">~</span>
+                <DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" />
+              </div>
             </div>
           </div>
         </section>
@@ -593,7 +666,7 @@ export default function App() {
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
                         <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px rgba(0,0,0,0.05)' }} />
+                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
                         <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
                         <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={10} />
                         <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={10} />
@@ -617,7 +690,7 @@ export default function App() {
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
                         <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px rgba(0,0,0,0.05)' }} />
+                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
                         <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
                         <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={10} />
                         <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={10} />
