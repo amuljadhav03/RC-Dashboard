@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
-  PieChart, Pie, Cell, LabelList, Sector
+  PieChart, Pie, Cell, Sector, LabelList
 } from 'recharts';
 import { DashboardData } from './types';
 import { parseCSV } from './utils/dataParser';
@@ -33,6 +33,8 @@ const PLATFORM_COL_ALIASES = ['Platform', 'OS', 'Environment'];
 const DATE_COL_ALIASES = ['Build Date', 'Date', 'Reported Date', 'Created At'];
 const BUILD_TYPE_COL_ALIASES = ['Build Type', 'Type', 'Deployment Type', 'Category'];
 const BUILD_STATUS_COL_ALIASES = ['Status', 'Overall Status', 'Result', 'Execution Status'];
+const AUTO_COL_ALIASES = ['Automation executed', 'Automation', 'Auto Executed', 'Automation Test Cases'];
+const MANUAL_COL_ALIASES = ['Manual executed', 'Manual', 'Manual Executed', 'Manual Test Cases'];
 
 // --- INTERFACES ---
 interface MetricCardProps {
@@ -66,7 +68,6 @@ const CustomTooltip = ({ active, payload, label }: any) => {
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5 border-b border-slate-50 dark:border-slate-800 pb-1.5">{title}</p>
       <div className="space-y-1.5">
         {payload.map((entry: any, index: number) => {
-          // Accurate percentage for Pie slices
           const percent = entry.payload?.percent !== undefined ? entry.payload.percent : entry.percent;
           const hasPercent = percent !== undefined && !isNaN(percent);
 
@@ -93,28 +94,41 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 };
 
 function DateSelector({ value, onChange, placeholder }: { value: string, onChange: (v: string) => void, placeholder: string }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const calendarRef = useRef<HTMLDivElement>(null);
-  
-  useEffect(() => {
-    const click = (e: MouseEvent) => { if (calendarRef.current && !calendarRef.current.contains(e.target as Node)) setIsOpen(false); };
-    document.addEventListener('mousedown', click);
-    return () => document.removeEventListener('mousedown', click);
-  }, []);
-
-  const formatDate = (val: string) => val ? new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : placeholder;
+  const formatDate = (val: string) => {
+    if (!val) return placeholder;
+    return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
 
   return (
-    <div className="relative flex-1 min-w-0">
-      <div onClick={() => setIsOpen(!isOpen)} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center justify-between group">
-        <span className={`truncate mr-2 ${value ? 'text-slate-900 dark:text-white' : 'text-slate-400'}`}>{formatDate(value)}</span>
-        <svg className="w-3.5 h-3.5 text-slate-300 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+    <div className="relative flex-1 min-w-0 h-11">
+      <div className="w-full h-full bg-slate-50 dark:bg-slate-800 px-4 rounded-2xl border border-transparent group-hover:border-slate-200 dark:group-hover:border-slate-700 transition-all flex items-center justify-between pointer-events-none group">
+        <span className={`text-xs font-bold truncate mr-2 ${value ? 'text-slate-900 dark:text-white' : 'text-slate-400'}`}>
+          {formatDate(value)}
+        </span>
+        <svg className="w-4 h-4 text-slate-300 group-hover:text-primary-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
       </div>
-      {isOpen && (
-        <div ref={calendarRef} className="absolute top-full left-1/2 -translate-x-1/2 md:left-0 md:translate-x-0 mt-2 z-[100] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-4 w-[260px] animate-in fade-in zoom-in-95">
-           <input type="date" value={value} onChange={(e) => { onChange(e.target.value); setIsOpen(false); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500" />
-           {value && <button onClick={() => { onChange(''); setIsOpen(false); }} className="w-full mt-3 text-[9px] font-black uppercase text-slate-400 hover:text-rose-500">Clear</button>}
-        </div>
+      
+      <input 
+        type="date" 
+        value={value} 
+        onChange={(e) => onChange(e.target.value)} 
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 block"
+        aria-label={placeholder}
+      />
+
+      {value && (
+        <button 
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(''); }} 
+          className="absolute right-10 top-1/2 -translate-y-1/2 p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-all z-20"
+          type="button"
+          title="Clear date"
+        >
+          <svg className="w-3 h-3 text-slate-400 hover:text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
       )}
     </div>
   );
@@ -136,7 +150,7 @@ export default function App() {
   const [selectedBuild, setSelectedBuild] = useState<string>('All');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
-  
+
   const isDark = theme === 'dark';
 
   useEffect(() => {
@@ -145,19 +159,35 @@ export default function App() {
   }, [theme, isDark]);
 
   const fetchData = useCallback(async (tabId: string, silent = false) => {
-    if (!silent) { setLoadingMap(p => ({ ...p, [tabId]: true })); setErrorMap(p => ({ ...p, [tabId]: null })); }
+    if (!silent) { 
+      setLoadingMap(p => ({ ...p, [tabId]: true })); 
+      setErrorMap(p => ({ ...p, [tabId]: null })); 
+    }
     const config = Object.values(TABS_CONFIG).find(t => t.id === tabId);
     if (!config) return;
+
     try {
       const resp = await fetch(`${BASE_URL}&gid=${config.gid}&t=${Date.now()}`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      
+      if (!resp.ok) {
+        if (resp.status === 400) throw new Error(`Invalid source configuration (GID: ${config.gid}). Please verify the sheet GID.`);
+        if (resp.status === 404) throw new Error("Google Sheet not found or not published to web as CSV.");
+        throw new Error(`Connection error (HTTP ${resp.status}). Please check your network.`);
+      }
+
       const text = await resp.text();
-      if (text.includes('<!DOCTYPE html>')) throw new Error("Private sheet");
+      if (text.includes('<!DOCTYPE html>') || text.includes('Google Drive - Access Denied')) {
+        throw new Error("Access denied. Ensure the Google Sheet is published to web for 'Anyone with the link'.");
+      }
+
       setDataMap(p => ({ ...p, [tabId]: parseCSV(text) }));
       setLastUpdatedMap(p => ({ ...p, [tabId]: new Date() }));
     } catch (e: any) {
       if (!silent) setErrorMap(p => ({ ...p, [tabId]: e.message }));
-    } finally { if (!silent) setLoadingMap(p => ({ ...p, [tabId]: false })); }
+      console.error(`Fetch error for tab ${tabId}:`, e);
+    } finally { 
+      if (!silent) setLoadingMap(p => ({ ...p, [tabId]: false })); 
+    }
   }, []);
 
   const syncAll = useCallback(async (isAuto = false) => {
@@ -193,27 +223,57 @@ export default function App() {
     Object.values(dataMap).forEach(d => {
       const pCol = PLATFORM_COL_ALIASES.find(a => d.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => d.headers.includes(a));
       if (bCol) d.rows.forEach(r => {
-        if (selectedPlatform === 'All' || (pCol && String(r[pCol]) === selectedPlatform)) all.add(String(r[bCol] || '').trim());
+        if (selectedPlatform === 'All' || (pCol && String(r[pCol]) === selectedPlatform)) {
+          all.add(String(r[bCol] || '').trim());
+        }
       });
     });
     return Array.from(all).filter(Boolean).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   }, [dataMap, selectedPlatform]);
+
+  const handleBuildSelection = (buildVal: string) => {
+    setSelectedBuild(buildVal);
+    if (buildVal !== 'All') {
+      const summary = dataMap[TABS_CONFIG.SUMMARY.id];
+      if (summary) {
+        const bCol = BUILD_COL_ALIASES.find(a => summary.headers.includes(a));
+        const pCol = PLATFORM_COL_ALIASES.find(a => summary.headers.includes(a));
+        const match = summary.rows.find(r => String(r[bCol || '']) === buildVal);
+        if (match && pCol && match[pCol]) {
+          setSelectedPlatform(String(match[pCol]));
+        }
+      }
+    }
+  };
 
   const buildMetadata = useMemo(() => {
     if (selectedBuild === 'All') return null;
     const summary = dataMap[TABS_CONFIG.SUMMARY.id];
     if (!summary) return null;
     const bCol = BUILD_COL_ALIASES.find(a => summary.headers.includes(a));
+    const pCol = PLATFORM_COL_ALIASES.find(a => summary.headers.includes(a));
     const match = summary.rows.find(r => String(r[bCol || '']) === selectedBuild);
     if (!match) return null;
     const tCol = BUILD_TYPE_COL_ALIASES.find(a => summary.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => summary.headers.includes(a)), sCol = BUILD_STATUS_COL_ALIASES.find(a => summary.headers.includes(a));
     return {
       build: String(match[bCol || '']),
+      platform: pCol ? String(match[pCol] || 'N/A') : 'N/A',
       type: tCol ? String(match[tCol] || 'N/A') : 'N/A',
       date: dCol ? String(match[dCol] || 'N/A') : 'N/A',
       status: sCol ? String(match[sCol] || 'N/A') : 'N/A',
     };
   }, [dataMap, selectedBuild]);
+
+  const pageDisplayName = useMemo(() => {
+    if (selectedBuild !== 'All' && buildMetadata) {
+      return `Ifocus Report for ${buildMetadata.platform} ${buildMetadata.build}`;
+    }
+    return 'Ifocus RC build reports';
+  }, [selectedBuild, buildMetadata]);
+
+  useEffect(() => {
+    document.title = pageDisplayName;
+  }, [pageDisplayName]);
 
   const filteredRows = useMemo(() => {
     const data = dataMap[activeTab];
@@ -258,9 +318,12 @@ export default function App() {
   }, [filteredRows, activeTab]);
 
   const trendData = useMemo(() => filteredRows.slice(0, 10).reverse().map(r => {
-    const rawName = String(r['RC Build'] || r['Build'] || r['Build Version']);
-    // Extract short name (last part) for axis, full name for tooltip
-    const shortName = rawName.split(' ').pop() || '';
+    const rawName = String(r['RC Build'] || r['Build'] || r['Build Version'] || 'Unknown');
+    const shortName = rawName.split(' ').pop() || rawName;
+    
+    const autoKey = AUTO_COL_ALIASES.find(a => r[a] !== undefined);
+    const manualKey = MANUAL_COL_ALIASES.find(a => r[a] !== undefined);
+
     return {
       name: shortName,
       fullName: rawName,
@@ -269,37 +332,62 @@ export default function App() {
       Critical: Number(r['Critical Issues']) || 0,
       Major: Number(r['Major Issues']) || 0,
       Minor: Number(r['Minor Issues']) || 0,
-      Automation: Number(r['Automation executed'] || r['Automation']) || 0,
-      Manual: Number(r['Manual executed'] || r['Manual']) || 0,
+      Automation: autoKey ? Number(r[autoKey]) : 0,
+      Manual: manualKey ? Number(r[manualKey]) : 0,
     };
   }), [filteredRows]);
 
-  const renderActiveShape = (props: any) => <Sector {...props} outerRadius={props.outerRadius + 8} stroke="none" className="transition-all duration-300" />;
+  const hasIssuesInTrend = useMemo(() => {
+    return trendData.some(d => (d.Critical + d.Major + d.Minor) > 0);
+  }, [trendData]);
+
+  const renderActiveShape = (props: any) => {
+    const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill } = props;
+    return (
+      <g>
+        <Sector
+          cx={cx}
+          cy={cy}
+          innerRadius={innerRadius}
+          outerRadius={outerRadius + 6}
+          startAngle={startAngle}
+          endAngle={endAngle}
+          fill={fill}
+          className="transition-all duration-300"
+        />
+        <Sector
+          cx={cx}
+          cy={cy}
+          startAngle={startAngle}
+          endAngle={endAngle}
+          innerRadius={outerRadius + 8}
+          outerRadius={outerRadius + 10}
+          fill={fill}
+        />
+      </g>
+    );
+  };
 
   const renderPieLabel = (props: any) => {
     const { cx, cy, midAngle, outerRadius, percent, name, value, fill } = props;
-    // Hide labels for extremely small slices to prevent overlap
-    if (percent < 0.05) return null; 
+    if (percent < 0.03) return null; 
     
     const RADIAN = Math.PI / 180;
     const sin = Math.sin(-RADIAN * midAngle);
     const cos = Math.cos(-RADIAN * midAngle);
     
-    // Significantly outside the outerRadius to avoid overlap with center text
-    const labelDistance = outerRadius + 15;
-    const lineDistance = outerRadius + 35;
-
+    const labelDistance = outerRadius + 20;
     const sx = cx + (outerRadius + 5) * cos;
     const sy = cy + (outerRadius + 5) * sin;
     const mx = cx + labelDistance * cos;
     const my = cy + labelDistance * sin;
-    const ex = mx + (cos >= 0 ? 1 : -1) * 15;
+    const ex = mx + (cos >= 0 ? 1 : -1) * 12;
     const ey = my;
     const textAnchor = cos >= 0 ? 'start' : 'end';
 
     return (
-      <g>
-        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} opacity={0.4} />
+      <g className="pointer-events-none">
+        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} opacity={0.3} />
         <circle cx={ex} cy={ey} r={2} fill={fill} />
         <text 
           x={ex + (cos >= 0 ? 6 : -6)} 
@@ -307,7 +395,7 @@ export default function App() {
           textAnchor={textAnchor} 
           fill={isDark ? '#cbd5e1' : '#1e293b'} 
           dominantBaseline="central" 
-          className="text-[9px] md:text-[11px] font-black uppercase tracking-tight"
+          className="text-[9px] font-black uppercase tracking-tight"
         >
           {name}: {value}
         </text>
@@ -318,7 +406,7 @@ export default function App() {
           textAnchor={textAnchor} 
           fill={isDark ? '#64748b' : '#94a3b8'} 
           dominantBaseline="central" 
-          className="text-[8px] md:text-[10px] font-bold"
+          className="text-[8px] font-bold"
         >
           ({(percent * 100).toFixed(1)}%)
         </text>
@@ -331,18 +419,17 @@ export default function App() {
     if (t.includes('hotfix')) return 'bg-rose-600';
     if (t.includes('planned')) return 'bg-emerald-600';
     if (t.includes('emergency')) return 'bg-orange-500';
-    if (t.includes('adhoc') || t.includes('ad-hoc')) return 'bg-amber-500';
+    if (t.includes('adhoc')) return 'bg-amber-500';
     if (t.includes('release')) return 'bg-primary-600';
     return 'bg-slate-500'; 
   };
 
   const getStatusColor = (status: string) => {
     const s = String(status).toLowerCase();
-    if (s.includes('complete') || s.includes('pass') || s.includes('success')) return 'bg-emerald-500';
-    if (s.includes('progress') || s.includes('running') || s.includes('pending')) return 'bg-amber-500';
+    if (s.includes('completed') || s.includes('complete') || s.includes('pass') || s.includes('success')) return 'bg-emerald-500';
+    if (s.includes('in progress') || s.includes('progress') || s.includes('running') || s.includes('pending')) return 'bg-orange-500';
     if (s.includes('fail') || s.includes('error') || s.includes('critical')) return 'bg-rose-500';
-    if (s.includes('not') || s.includes('n/a') || s.includes('skipped')) return 'bg-slate-400';
-    return 'bg-primary-500';
+    return 'bg-slate-400';
   };
 
   return (
@@ -356,7 +443,9 @@ export default function App() {
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg shadow-primary-500/20">i</div>
             <div className="min-w-0">
-              <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 truncate">{selectedBuild !== 'All' ? `Analytics: ${selectedBuild}` : 'RC Build Analytics'}</h1>
+              <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 truncate">
+                {pageDisplayName}
+              </h1>
               <div className="flex items-center gap-1.5 mt-0.5"><span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} /><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Synced: {lastUpdatedMap[activeTab]?.toLocaleTimeString() || 'Waiting'}</span></div>
             </div>
           </div>
@@ -373,8 +462,8 @@ export default function App() {
             <button onClick={() => { setSelectedPlatform('All'); setSelectedBuild('All'); setStartDate(''); setEndDate(''); }} className="absolute top-4 right-8 text-[10px] font-black uppercase text-slate-400 hover:text-rose-500">Reset Filters</button>
           )}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Platform</label><select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer">{platforms.map(p => <option key={p} value={p}>{p}</option>)}<option value="All">All Platforms</option></select></div>
-            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Build</label><select value={selectedBuild} onChange={e => setSelectedBuild(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer"><option value="All">All Builds</option>{builds.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Platform</label><select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer tracking-tight">{platforms.map(p => <option key={p} value={p}>{p}</option>)}<option value="All">All Platforms</option></select></div>
+            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Build</label><select value={selectedBuild} onChange={e => handleBuildSelection(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer tracking-tight"><option value="All">All Builds</option>{builds.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
             <div className="md:col-span-2"><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Date Range</label><div className="flex items-center gap-2 mt-1"><DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" /><span className="text-slate-300">~</span><DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" /></div></div>
           </div>
         </section>
@@ -382,6 +471,7 @@ export default function App() {
         {buildMetadata && (
           <div className="bg-primary-600/5 dark:bg-primary-400/5 border border-primary-100 dark:border-primary-900/30 rounded-[2rem] p-6 flex flex-wrap gap-8 animate-in slide-in-from-top-4">
             <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Build Version</span><div className="flex items-center gap-3"><span className="text-base font-black text-slate-900 dark:text-white">{buildMetadata.build}</span><span className={`text-white text-[10px] font-black uppercase px-2.5 py-1 rounded-lg ${getBuildTypeColor(buildMetadata.type)} shadow-sm transition-colors duration-300`}>{buildMetadata.type}</span></div></div>
+            <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Platform</span><span className="text-sm font-bold text-slate-700 dark:text-slate-300">{buildMetadata.platform}</span></div>
             <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Date</span><span className="text-sm font-bold text-slate-700 dark:text-slate-300">{buildMetadata.date}</span></div>
             <div className="flex flex-col">
               <span className="text-[9px] font-black uppercase text-slate-400 mb-1">Status</span>
@@ -392,7 +482,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-[1.8rem] w-full md:w-auto overflow-x-auto gap-1 shadow-inner">
+        <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-[1.8rem] w-full md:w-auto overflow-x-auto gap-1 shadow-inner no-scrollbar">
           {Object.values(TABS_CONFIG).map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`px-8 py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 ${activeTab === tab.id ? 'bg-white dark:bg-slate-800 text-primary-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}><span>{tab.icon}</span>{tab.label}</button>
           ))}
@@ -411,7 +501,7 @@ export default function App() {
               <Card title="Distribution" loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)}>
                 <div className="h-[340px] relative">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                    <PieChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
                       <Pie 
                         {...({ activeIndex, activeShape: renderActiveShape } as any)} 
                         data={pieData} 
@@ -442,33 +532,40 @@ export default function App() {
 
               <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <Card title="Issue Trend" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
-                  <div className="h-[320px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 40, right: 10, left: -25, bottom: 5 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '35px', fontSize: '10px', fontWeight: '800' }} />
-                        <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
-                        </Bar>
-                        <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
-                        </Bar>
-                        <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12}>
-                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
+                  <div className="h-[320px] flex items-center justify-center">
+                    {!hasIssuesInTrend ? (
+                      <div className="flex flex-col items-center justify-center space-y-3 opacity-60">
+                        <div className="w-12 h-12 bg-emerald-50 dark:bg-emerald-900/20 rounded-full flex items-center justify-center text-emerald-500 text-2xl">🛡️</div>
+                        <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 text-center">No issues reported in this build</p>
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={trendData} margin={{ top: 40, right: 10, left: -25, bottom: 20 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                          <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                          <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
+                          <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '35px', fontSize: '10px', fontWeight: '800' }} />
+                          <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12}>
+                            <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
+                          </Bar>
+                          <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12}>
+                            <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
+                          </Bar>
+                          <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12}>
+                            <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={10} />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    )}
                   </div>
                 </Card>
                 <Card title="Methodology" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 40, right: 10, left: -25, bottom: 5 }}>
+                      <BarChart data={trendData} margin={{ top: 40, right: 10, left: -25, bottom: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
                         <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '35px', fontSize: '10px', fontWeight: '800' }} />
@@ -486,7 +583,7 @@ export default function App() {
             </div>
 
             <Card title="Execution Matrix">
-              <div className="overflow-x-auto no-scrollbar custom-scrollbar">
+              <div className="overflow-x-auto custom-scrollbar no-scrollbar">
                 <table className="w-full text-left min-w-[1200px]">
                   <thead className="bg-slate-50 dark:bg-slate-800/50">
                     <tr>
@@ -505,6 +602,12 @@ export default function App() {
                     {filteredRows.map((row, idx) => {
                       const statusKey = BUILD_STATUS_COL_ALIASES.find(a => row[a] !== undefined) || 'Status';
                       const statusValue = row[statusKey] || 'N/A';
+                      
+                      const autoKey = AUTO_COL_ALIASES.find(a => row[a] !== undefined);
+                      const manualKey = MANUAL_COL_ALIASES.find(a => row[a] !== undefined);
+                      const autoVal = autoKey ? (row[autoKey] || 0) : 0;
+                      const manualVal = manualKey ? (row[manualKey] || 0) : 0;
+                      
                       return (
                         <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
                           <td className="px-6 py-5">
@@ -524,8 +627,8 @@ export default function App() {
                           <td className="px-6 py-5 text-xs font-black text-emerald-600 text-right">{row['Passed'] || 0}</td>
                           <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
                           <td className="px-6 py-5 text-xs font-black text-slate-400 text-right">{row['Not considered'] || 0}</td>
-                          <td className="px-6 py-5 text-xs font-black text-violet-500 text-right">{row['Automation'] || 0}</td>
-                          <td className="px-6 py-5 text-xs font-black text-pink-500 text-right">{row['Manual'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-violet-500 text-right">{autoVal}</td>
+                          <td className="px-6 py-5 text-xs font-black text-pink-500 text-right">{manualVal}</td>
                           <td className="px-6 py-5">
                             <div className="flex gap-1.5 justify-end">
                               <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" />
@@ -573,11 +676,20 @@ function MetricCard({ title, value, icon }: MetricCardProps) {
 function Card({ title, children, loading, error, onRetry }: CardProps) {
   return (
     <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col min-h-[380px]">
-      <div className="px-8 py-6 border-b border-slate-50 dark:bg-slate-800/30"><h3 className="text-[12px] font-black uppercase tracking-widest text-slate-400">{title}</h3></div>
+      <div className="px-8 py-6 border-b border-slate-50 dark:bg-slate-800/30 flex items-center justify-between">
+        <h3 className="text-[12px] font-black uppercase tracking-widest text-slate-400">{title}</h3>
+      </div>
       <div className="p-8 flex-1 relative flex flex-col">
         {loading && <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm"><div className="w-12 h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin" /></div>}
         {error ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-8 animate-in fade-in"><div className="w-16 h-16 bg-rose-50 rounded-2xl flex items-center justify-center text-rose-500 text-3xl">⚠️</div><p className="text-[12px] font-bold text-slate-500">{error}</p><button onClick={onRetry} className="w-full bg-slate-900 text-white py-3.5 rounded-2xl text-[11px] font-black uppercase tracking-widest active:scale-95 transition-all">Retry</button></div>
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-8 animate-in fade-in">
+            <div className="w-16 h-16 bg-rose-50 dark:bg-rose-900/20 rounded-2xl flex items-center justify-center text-rose-500 text-3xl">⚠️</div>
+            <div className="space-y-1">
+              <p className="text-[12px] font-bold text-slate-700 dark:text-slate-300">Data Synchronization Error</p>
+              <p className="text-[10px] font-medium text-slate-500 max-w-xs mx-auto">{error}</p>
+            </div>
+            <button onClick={onRetry} className="px-8 bg-slate-900 dark:bg-slate-800 text-white py-3.5 rounded-2xl text-[11px] font-black uppercase tracking-widest active:scale-95 transition-all shadow-lg hover:shadow-slate-500/20">Retry Connection</button>
+          </div>
         ) : children}
       </div>
     </div>
