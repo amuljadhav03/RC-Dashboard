@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   PieChart, Pie, Cell
@@ -8,24 +7,70 @@ import { DashboardData } from './types';
 import { parseCSV } from './utils/dataParser';
 
 // --- CONFIGURATION ---
-const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1yjf5kI6WPNwi_WhH3dFTgiIUONztM54I50sJtnr_PxY/export?format=csv&gid=0';
+const PUBLISHED_ID = '2PACX-1vSrx7lqwi5bjj99rYho8jYGBYH47sYw2a5d62uPGrKS-HvSgiz6o-Rx_opsCMGNhVNRjJNx2bi6OTfK';
+const BASE_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?output=csv`;
+const INDEX_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pubhtml`;
+
+const TABS_CONFIG = {
+  SUMMARY: { id: 'summary', label: 'Report Summary', gid: '0', icon: '📊' },
+  NEW_ISSUES: { id: 'new_issues', label: 'New Issues', gid: '1410887303', icon: '🐛' },
+  VALIDATION: { id: 'validation', label: 'Ticket Validation', gid: '1853472064', icon: '✅' },
+};
 
 const EXECUTION_COLORS = {
   pass: '#10B981',
   fail: '#F43F5E',
   notConsidered: '#94A3B8',
-  pending: '#F59E0B',
+  automation: '#8B5CF6',
+  manual: '#EC4899',
+  critical: '#F43F5E',
+  major: '#F59E0B',
+  minor: '#3B82F6',
 };
+
+const BUILD_COL_ALIASES = ['RC Build', 'Build Version', 'Build', 'Version', 'Build Number'];
+const PLATFORM_COL_ALIASES = ['Platform', 'OS', 'Environment'];
+const DATE_COL_ALIASES = ['Build Date', 'Date', 'Reported Date', 'Created At'];
+const BUILD_TYPE_COL_ALIASES = ['Build Type', 'Type', 'Deployment Type', 'Category'];
+const BUILD_STATUS_COL_ALIASES = ['Status', 'Overall Status', 'Result', 'Execution Status'];
+
+interface MetricCardProps {
+  title: string;
+  value: string | number;
+  icon: string;
+}
+
+interface CardProps {
+  title: string;
+  children?: React.ReactNode;
+  loading?: boolean;
+  error?: string | null;
+  tabGid?: string;
+  onRetry?: () => void;
+  onApplyFix?: (newGid: string) => void;
+  suggestedGid?: string | null;
+}
+
+interface BadgeProps {
+  value: any;
+  color: string;
+  label: string;
+  size?: 'sm' | 'md';
+}
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => 
     (localStorage.getItem('dashboard-theme') as 'light' | 'dark') || 'light'
   );
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   
-  // Filters State
+  const [dataMap, setDataMap] = useState<Record<string, DashboardData>>({});
+  const [activeTab, setActiveTab] = useState<string>(TABS_CONFIG.SUMMARY.id);
+  const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
+  const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
+  const [suggestedGidMap, setSuggestedGidMap] = useState<Record<string, string | null>>({});
+  const [gidOverrides, setGidOverrides] = useState<Record<string, string>>({});
+  const [lastUpdatedMap, setLastUpdatedMap] = useState<Record<string, Date>>({});
+  
   const [selectedPlatform, setSelectedPlatform] = useState<string>('All');
   const [selectedBuild, setSelectedBuild] = useState<string>('All');
   const [startDate, setStartDate] = useState<string>('');
@@ -38,426 +83,580 @@ export default function App() {
     else document.documentElement.classList.remove('dark');
   }, [isDark]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const attemptGidDiscovery = async (tabLabel: string) => {
     try {
-      const response = await fetch(DEFAULT_SHEET_URL);
-      if (!response.ok) throw new Error('Network response was not ok');
-      const csvText = await response.text();
-      const parsed = parseCSV(csvText);
-      setData(parsed);
-      setLastUpdated(new Date());
-    } catch (error) {
-      console.error("Fetch error. Using static sample.");
-      const sampleCsv = `Sprint number,RC Build,Build Date,Platform,Total Test Cases,Executed,Passed,Pass %,Failed,Not considered,Not considered %,Pending %,Completion %,Critical Issues,Major Issues,Minor Issues,Status\n139,5.139.118 (68151),2 Jan 2026,Android,892,892,802,89.91%,6,84,9.42%,0.00%,100.00%,0,0,1,Active`;
-      setData(parseCSV(sampleCsv));
-    } finally {
-      setLoading(false);
+      const response = await fetch(`${INDEX_URL}?t=${Date.now()}`);
+      if (!response.ok) return null;
+      const html = await response.text();
+      
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const tabs = doc.querySelectorAll('li[id^="sheet-button-"]');
+      
+      for (const tab of Array.from(tabs)) {
+        const link = tab.querySelector('a');
+        if (link && link.textContent?.trim().toLowerCase().includes(tabLabel.toLowerCase())) {
+          const gid = link.getAttribute('href')?.replace('#', '');
+          if (gid) return gid;
+        }
+      }
+      
+      const regex = new RegExp(`href="#([^"]+)"[^>]*>([^<]*${tabLabel}[^<]*)`, 'gi');
+      let match;
+      while ((match = regex.exec(html)) !== null) {
+        if (match[1]) return match[1].trim();
+      }
+    } catch (e) {
+      console.warn("GID auto-discovery failed", e);
     }
+    return null;
   };
 
-  useEffect(() => { fetchData(); }, []);
-  useEffect(() => { localStorage.setItem('dashboard-theme', theme); }, [theme]);
+  const fetchData = useCallback(async (tabId: string, silent = false) => {
+    if (!silent) setLoadingMap(prev => ({ ...prev, [tabId]: true }));
+    setErrorMap(prev => ({ ...prev, [tabId]: null }));
+    
+    const config = Object.values(TABS_CONFIG).find(t => t.id === tabId);
+    if (!config) return;
 
-  // Derived Filter Options
+    const currentGid = gidOverrides[tabId] || config.gid;
+
+    try {
+      const fetchUrl = `${BASE_URL}&gid=${currentGid}&t=${Date.now()}`;
+      const response = await fetch(fetchUrl, { cache: 'no-store' });
+      
+      if (!response.ok) {
+        if (response.status === 400) {
+          const suggested = await attemptGidDiscovery(config.label);
+          if (suggested && suggested !== currentGid) {
+            setSuggestedGidMap(prev => ({ ...prev, [tabId]: suggested }));
+          }
+          throw new Error(`Invalid Tab Identifier (GID: ${currentGid}). Google Sheets returned a 400 error. This happens if tabs were moved or deleted.`);
+        }
+        throw new Error(`Failed to connect to spreadsheet (Status: ${response.status}).`);
+      }
+      
+      const csvText = await response.text();
+      if (csvText.includes('ServiceLogin') || csvText.includes('<html')) {
+        throw new Error("Access Denied. Sheet is either private or the Publish settings are incorrect.");
+      }
+
+      const parsed = parseCSV(csvText);
+      setDataMap(prev => ({ ...prev, [tabId]: parsed }));
+      setLastUpdatedMap(prev => ({ ...prev, [tabId]: new Date() }));
+      setSuggestedGidMap(prev => ({ ...prev, [tabId]: null }));
+    } catch (error: any) {
+      setErrorMap(prev => ({ ...prev, [tabId]: error.message }));
+    } finally {
+      if (!silent) setLoadingMap(prev => ({ ...prev, [tabId]: false }));
+    }
+  }, [gidOverrides]);
+
+  const applyGidFix = (tabId: string, newGid: string) => {
+    setGidOverrides(prev => ({ ...prev, [tabId]: newGid }));
+    setTimeout(() => fetchData(tabId), 10);
+  };
+
+  const syncAll = useCallback(async () => {
+    await Promise.all(Object.values(TABS_CONFIG).map(tab => fetchData(tab.id)));
+  }, [fetchData]);
+
+  useEffect(() => { syncAll(); }, [syncAll]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      Object.values(TABS_CONFIG).forEach(tab => fetchData(tab.id, true));
+    }, 120000); 
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
   const platforms = useMemo(() => {
-    if (!data) return [];
-    return Array.from(new Set(data.rows.map(r => r.Platform))).filter(Boolean).sort();
-  }, [data]);
+    const allPlatforms = new Set<string>();
+    Object.values(dataMap).forEach(data => {
+      const col = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
+      if (col) data.rows.forEach(r => r[col] && allPlatforms.add(String(r[col])));
+    });
+    return Array.from(allPlatforms).sort();
+  }, [dataMap]);
 
   const builds = useMemo(() => {
-    if (!data) return [];
-    let rows = data.rows;
-    if (selectedPlatform !== 'All') {
-      rows = rows.filter(r => r.Platform === selectedPlatform);
-    }
-    return Array.from(new Set(rows.map(r => r['RC Build']))).filter(Boolean).reverse();
-  }, [data, selectedPlatform]);
-
-  // Main Filtering Logic
-  const filteredRows = useMemo(() => {
-    if (!data) return [];
-    let rows = data.rows;
-    
-    if (selectedPlatform !== 'All') {
-      rows = rows.filter(r => r.Platform === selectedPlatform);
-    }
-    
-    if (selectedBuild !== 'All') {
-      rows = rows.filter(r => r['RC Build'] === selectedBuild);
-    }
-
-    if (startDate) {
-      const sDate = new Date(startDate);
-      rows = rows.filter(r => new Date(r['Build Date']) >= sDate);
-    }
-
-    if (endDate) {
-      const eDate = new Date(endDate);
-      eDate.setHours(23, 59, 59, 999);
-      rows = rows.filter(r => new Date(r['Build Date']) <= eDate);
-    }
-    
-    return rows;
-  }, [data, selectedPlatform, selectedBuild, startDate, endDate]);
-
-  const summaryStats = useMemo(() => {
-    if (filteredRows.length === 0) return null;
-    const stats = filteredRows.reduce((acc, r) => ({
-      passed: acc.passed + (Number(r.Passed) || 0),
-      total: acc.total + (Number(r['Total Test Cases']) || 0),
-      critical: acc.critical + (Number(r['Critical Issues'] || r.Critical_Issues || 0)),
-      major: acc.major + (Number(r['Major Issues'] || r.Major_Issues || 0)),
-      executed: acc.executed + (Number(r.Executed) || 0),
-    }), { passed: 0, total: 0, critical: 0, major: 0, executed: 0 });
-
-    return {
-      passed: stats.passed,
-      total: stats.total,
-      critical: stats.critical,
-      major: stats.major,
-      executed: stats.executed,
-      passRate: stats.executed > 0 ? ((stats.passed / stats.executed) * 100).toFixed(1) : "0.0",
-      completion: stats.total > 0 ? ((stats.executed / stats.total) * 100).toFixed(1) : "0.0"
-    };
-  }, [filteredRows]);
-
-  const chartData = useMemo(() => {
-    if (!filteredRows.length) return [];
-    const uniqueBuilds = Array.from(new Set(filteredRows.map(r => r['RC Build'])));
-    return uniqueBuilds.map(b => {
-      const buildRows = filteredRows.filter(r => r['RC Build'] === b);
-      return {
-        build: b.split('(')[0].trim(),
-        passed: buildRows.reduce((sum, r) => sum + (Number(r.Passed) || 0), 0),
-        failed: buildRows.reduce((sum, r) => sum + (Number(r.Failed) || 0), 0),
-        notConsidered: buildRows.reduce((sum, r) => sum + (Number(r['Not considered'] || 0)), 0),
-        critical: buildRows.reduce((sum, r) => sum + (Number(r['Critical Issues'] || 0)), 0),
-        major: buildRows.reduce((sum, r) => sum + (Number(r['Major Issues'] || 0)), 0),
-      };
-    });
-  }, [filteredRows]);
-
-  const pieData = useMemo(() => {
-    if (!filteredRows.length) return [];
-    const totalPassed = filteredRows.reduce((sum, r) => sum + (Number(r.Passed) || 0), 0);
-    const totalFailed = filteredRows.reduce((sum, r) => sum + (Number(r.Failed) || 0), 0);
-    const totalNC = filteredRows.reduce((sum, r) => sum + (Number(r['Not considered'] || 0)), 0);
-    return [
-      { name: 'Pass', value: totalPassed, color: EXECUTION_COLORS.pass },
-      { name: 'Fail', value: totalFailed, color: EXECUTION_COLORS.fail },
-      { name: 'N.C', value: totalNC, color: EXECUTION_COLORS.notConsidered },
-    ];
-  }, [filteredRows]);
-
-  const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
-
-  const openDatePicker = (e: React.MouseEvent<HTMLInputElement> | React.FocusEvent<HTMLInputElement>) => {
-    try {
-      if ('showPicker' in e.currentTarget) {
-        (e.currentTarget as any).showPicker();
+    if (selectedPlatform === 'All') return [];
+    const allBuilds = new Set<string>();
+    Object.values(dataMap).forEach(data => {
+      const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
+      const bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a));
+      if (pCol && bCol) {
+        data.rows.forEach(r => {
+          if (String(r[pCol]) === selectedPlatform && r[bCol]) allBuilds.add(String(r[bCol]));
+        });
       }
-    } catch (err) {
-      console.debug("Native date picker trigger failed, falling back to standard interaction.");
-    }
+    });
+    return Array.from(allBuilds).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  }, [dataMap, selectedPlatform]);
+
+  const buildMetadata = useMemo(() => {
+    if (selectedBuild === 'All') return null;
+    const summary = dataMap[TABS_CONFIG.SUMMARY.id];
+    if (!summary) return null;
+    const bCol = BUILD_COL_ALIASES.find(a => summary.headers.includes(a));
+    if (!bCol) return null;
+    const match = summary.rows.find(r => String(r[bCol]) === selectedBuild);
+    if (!match) return null;
+    
+    const tCol = BUILD_TYPE_COL_ALIASES.find(a => summary.headers.includes(a));
+    const dCol = DATE_COL_ALIASES.find(a => summary.headers.includes(a));
+    const sCol = BUILD_STATUS_COL_ALIASES.find(a => summary.headers.includes(a));
+    
+    return {
+      build: String(match[bCol]),
+      type: tCol ? String(match[tCol] || 'N/A') : 'N/A',
+      date: dCol ? String(match[dCol] || 'N/A') : 'N/A',
+      status: sCol ? String(match[sCol] || 'N/A') : 'N/A',
+    };
+  }, [dataMap, selectedBuild]);
+
+  const getBuildTypeColor = (type: string) => {
+    const t = type.toLowerCase();
+    if (t.includes('hotfix')) return 'bg-rose-600 shadow-rose-500/20';
+    if (t.includes('planned') || t.includes('release')) return 'bg-emerald-600 shadow-emerald-500/20';
+    if (t.includes('beta')) return 'bg-amber-500 shadow-amber-500/20';
+    if (t.includes('dev')) return 'bg-indigo-600 shadow-indigo-500/20';
+    return 'bg-primary-600 shadow-primary-500/20';
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-500 pb-12">
-      {/* Navigation */}
-      <nav className="sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 shrink-0">
-              <span className="font-black text-xl">IF</span>
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-lg md:text-xl font-extrabold uppercase tracking-tight truncate">Ifocus - Report Summary</h1>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                  Live Sync • {lastUpdated?.toLocaleTimeString() || 'Connecting...'}
-                </span>
-              </div>
-            </div>
-          </div>
+  const getStatusColor = (status: string) => {
+    const s = status.toLowerCase();
+    if (s.includes('pass') || s.includes('fix') || s.includes('resolve') || s.includes('complete')) return 'text-emerald-500';
+    if (s.includes('fail') || s.includes('block') || s.includes('open') || s.includes('critical')) return 'text-rose-500';
+    return 'text-amber-500';
+  };
 
-          <div className="flex items-center gap-2 md:gap-3 shrink-0">
-            <button onClick={toggleTheme} className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center hover:scale-105 transition-transform shadow-sm">
-              {isDark ? '☀️' : '🌙'}
-            </button>
-            <button onClick={fetchData} className="px-3 md:px-5 py-2 bg-indigo-600 text-white rounded-xl text-[10px] md:text-xs font-black uppercase hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20">
-              {loading ? '...' : 'Refresh'}
-            </button>
+  const filteredRows = useMemo(() => {
+    const currentData = dataMap[activeTab];
+    if (!currentData) return [];
+    let rows = [...currentData.rows];
+    const headers = currentData.headers;
+    if (selectedPlatform !== 'All') {
+      const col = PLATFORM_COL_ALIASES.find(a => headers.includes(a));
+      if (col) rows = rows.filter(r => String(r[col]) === selectedPlatform);
+    }
+    if (selectedBuild !== 'All') {
+      const col = BUILD_COL_ALIASES.find(a => headers.includes(a));
+      if (col) rows = rows.filter(r => String(r[col]) === selectedBuild);
+    }
+    return rows;
+  }, [dataMap, activeTab, selectedPlatform, selectedBuild]);
+
+  const summaryStats = useMemo(() => {
+    if (activeTab !== TABS_CONFIG.SUMMARY.id || !filteredRows.length) return null;
+    return filteredRows.reduce((acc, r) => ({
+      total: acc.total + (Number(r['Total Test Cases']) || 0),
+      executed: acc.executed + (Number(r.Executed) || 0),
+      passed: acc.passed + (Number(r.Passed) || 0),
+      critical: acc.critical + (Number(r['Critical Issues']) || 0),
+    }), { total: 0, executed: 0, passed: 0, critical: 0 });
+  }, [filteredRows, activeTab]);
+
+  const pieData = useMemo(() => {
+    if (activeTab !== TABS_CONFIG.SUMMARY.id || !filteredRows.length) return [];
+    const p = filteredRows.reduce((s, r) => s + (Number(r.Passed) || 0), 0);
+    const f = filteredRows.reduce((s, r) => s + (Number(r.Failed) || 0), 0);
+    const n = filteredRows.reduce((s, r) => s + (Number(r['Not considered']) || 0), 0);
+    return [
+      { name: 'Pass', value: p, color: EXECUTION_COLORS.pass },
+      { name: 'Fail', value: f, color: EXECUTION_COLORS.fail },
+      { name: 'N/A', value: n, color: EXECUTION_COLORS.notConsidered },
+    ];
+  }, [filteredRows, activeTab]);
+
+  const trendData = useMemo(() => {
+    return filteredRows.slice(0, 10).reverse().map(r => ({
+      name: r['RC Build'] || r['Build'] || r['Build Version'],
+      Passed: Number(r.Passed) || 0,
+      Failed: Number(r.Failed) || 0,
+      'Not considered': Number(r['Not considered']) || 0,
+      Automation: Number(r['Automation executed'] || r['Automation']) || 0,
+      Manual: Number(r['Manual executed'] || r['Manual']) || 0,
+      Critical: Number(r['Critical Issues']) || 0,
+      Major: Number(r['Major Issues']) || 0,
+      Minor: Number(r['Minor Issues']) || 0,
+    }));
+  }, [filteredRows]);
+
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#020617] pb-12 transition-all">
+      <nav className="sticky top-0 z-50 glass border-b border-slate-200 dark:border-slate-800 px-6 py-4 shadow-sm">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+             <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg shadow-primary-500/20">i</div>
+             <div>
+               <h1 className="text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400">Execution Portal</h1>
+               <div className="flex items-center gap-2 mt-0.5">
+                 <span className={`w-1.5 h-1.5 rounded-full ${Object.values(loadingMap).some(v => v) ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                   Synced: {lastUpdatedMap[activeTab]?.toLocaleTimeString() || 'Waiting...'}
+                 </span>
+               </div>
+             </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:scale-105 transition-transform">{isDark ? '☀️' : '🌙'}</button>
+            <button onClick={syncAll} disabled={Object.values(loadingMap).some(v => v)} className="px-5 py-2.5 bg-primary-600 text-white rounded-xl text-xs font-black uppercase hover:bg-primary-700 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-primary-500/10">Sync All</button>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto p-6 lg:p-8 space-y-6">
-        
-        {/* Filters Panel */}
-        <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Platform</label>
-              <div className="relative">
-                <select 
-                  value={selectedPlatform} 
-                  onChange={(e) => {
-                    setSelectedPlatform(e.target.value);
-                    setSelectedBuild('All');
-                  }}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-xs font-bold px-4 py-3 focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer appearance-none pr-10"
-                >
-                  <option value="All">All Platforms</option>
-                  {platforms.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                </div>
-              </div>
+      <main className="max-w-[1600px] mx-auto p-6 lg:p-8 space-y-8">
+        {/* FILTERS */}
+        <section className="bg-white dark:bg-slate-900 rounded-[2rem] p-6 border border-slate-200 dark:border-slate-800 shadow-sm grid grid-cols-1 md:grid-cols-4 gap-6">
+          <div className="space-y-2">
+            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Platform</label>
+            <select value={selectedPlatform} onChange={e => { setSelectedPlatform(e.target.value); setSelectedBuild('All'); }} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
+              <option value="All">All Platforms</option>
+              {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <div className={`space-y-2 transition-opacity ${selectedPlatform === 'All' ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Build Version</label>
+            <select value={selectedBuild} onChange={e => setSelectedBuild(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500 transition-all appearance-none cursor-pointer">
+              <option value="All">All Builds</option>
+              {builds.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2 md:col-span-2 flex flex-col justify-end">
+            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1 mb-1">Date Range</label>
+            <div className="flex items-center gap-2">
+              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="flex-1 bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500" />
+              <span className="text-slate-300 font-bold px-1">~</span>
+              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="flex-1 bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500" />
             </div>
-            
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Build Version</label>
-              <div className="relative">
-                <select 
-                  value={selectedBuild} 
-                  onChange={(e) => setSelectedBuild(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-xs font-bold px-4 py-3 focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer appearance-none pr-10"
-                >
-                  <option value="All">All Build Versions</option>
-                  {builds.map(b => <option key={b} value={b}>{b}</option>)}
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                </div>
-              </div>
-            </div>
+          </div>
+        </section>
 
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Start Date</label>
-              <div className="relative group">
-                <input 
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  onClick={openDatePicker}
-                  onFocus={openDatePicker}
-                  placeholder="Select Start Date"
-                  className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-xs font-bold px-4 py-3 focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer appearance-none relative z-10"
-                />
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 z-0">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg>
-                </div>
+        {/* METADATA BAR */}
+        {buildMetadata && (
+          <div className="bg-primary-600/5 dark:bg-primary-400/5 border border-primary-100 dark:border-primary-900/30 rounded-3xl p-5 flex flex-wrap items-center gap-8 shadow-sm animate-in slide-in-from-top-4 duration-500">
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Selected Build</span>
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-black text-slate-900 dark:text-white">{buildMetadata.build}</span>
+                <span className={`text-white text-[9px] font-black uppercase px-2.5 py-1 rounded-lg shadow-lg ${getBuildTypeColor(buildMetadata.type)}`}>
+                  {buildMetadata.type}
+                </span>
               </div>
             </div>
-
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">End Date</label>
-              <div className="relative group">
-                <input 
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  onClick={openDatePicker}
-                  onFocus={openDatePicker}
-                  placeholder="Select End Date"
-                  className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-xs font-bold px-4 py-3 focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer appearance-none relative z-10"
-                />
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 z-0">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg>
-                </div>
+            <div className="h-8 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Platform</span>
+              <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{selectedPlatform}</span>
+            </div>
+            <div className="h-8 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Release Date</span>
+              <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{buildMetadata.date}</span>
+            </div>
+            <div className="h-8 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Build Status</span>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full animate-pulse ${getStatusColor(buildMetadata.status).replace('text', 'bg')}`}></span>
+                <span className={`text-sm font-black uppercase ${getStatusColor(buildMetadata.status)}`}>{buildMetadata.status}</span>
               </div>
             </div>
           </div>
-          
-          {(selectedPlatform !== 'All' || selectedBuild !== 'All' || startDate || endDate) && (
-            <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end">
-              <button 
-                onClick={() => {
-                  setSelectedPlatform('All');
-                  setSelectedBuild('All');
-                  setStartDate('');
-                  setEndDate('');
-                }}
-                className="text-[10px] font-black uppercase text-rose-500 hover:text-rose-600 transition-colors flex items-center gap-2"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                Clear All Filters
-              </button>
+        )}
+
+        {/* TABS */}
+        <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1.5 rounded-[1.5rem] inline-flex gap-1 overflow-x-auto shadow-inner">
+          {Object.values(TABS_CONFIG).map((tab) => (
+            <button 
+              key={tab.id} 
+              onClick={() => setActiveTab(tab.id)} 
+              className={`px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 active:scale-95 ${activeTab === tab.id ? 'bg-white dark:bg-slate-800 text-primary-600 shadow-md' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'}`}
+            >
+              <span className="text-base">{tab.icon}</span>{tab.label}
+              {errorMap[tab.id] && <span className="text-rose-500 animate-pulse">!</span>}
+            </button>
+          ))}
+        </div>
+
+        {/* CONTENT */}
+        {activeTab === 'summary' ? (
+          <div className="space-y-8 animate-in fade-in duration-500">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <MetricCard title="Total Testcases" value={summaryStats?.total || 0} icon="🎯" />
+              <MetricCard title="Executed" value={summaryStats?.executed || 0} icon="⚡" />
+              <MetricCard title="Pass Rate" value={`${summaryStats?.executed ? ((summaryStats.passed / summaryStats.executed) * 100).toFixed(1) : 0}%`} icon="✅" />
+              <MetricCard title="Critical Issues" value={summaryStats?.critical || 0} icon="🌋" />
             </div>
-          )}
-        </section>
 
-        {/* Metrics Overview */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard title="Test Scope" value={summaryStats?.total || 0} icon="🎯" color="indigo" />
-          <MetricCard title="Executed" value={summaryStats?.executed || 0} icon="⚡" color="blue" />
-          <MetricCard title="Success" value={`${summaryStats?.passRate || 0}%`} icon="✅" color="emerald" />
-          <MetricCard title="Critical Bugs" value={summaryStats?.critical || 0} icon="🌋" color="rose" />
-        </section>
-
-        {/* Full-width Charts and Logs */}
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Card title="Execution Breakdown">
-              <div className="h-[280px] flex flex-col sm:flex-row items-center gap-6 sm:gap-10">
-                <div className="w-full sm:w-1/2 h-full">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+              <Card 
+                title="Result Distribution" 
+                error={errorMap[activeTab]} 
+                loading={loadingMap[activeTab]} 
+                suggestedGid={suggestedGidMap[activeTab]}
+                onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
+                onRetry={() => fetchData(activeTab)}
+              >
+                <div className="h-[300px] relative">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={85} paddingAngle={5} dataKey="value">
-                        {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                      <Pie 
+                        data={pieData} 
+                        cx="50%" 
+                        cy="50%" 
+                        innerRadius={70} 
+                        outerRadius={100} 
+                        paddingAngle={8} 
+                        dataKey="value"
+                        label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+                        labelLine={true}
+                      >
+                        {pieData.map((e, i) => <Cell key={i} fill={e.color} stroke="none" />)}
                       </Pie>
-                      <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', fontWeight: 'bold', fontSize: '10px' }} />
+                      <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '12px' }} />
                     </PieChart>
                   </ResponsiveContainer>
-                </div>
-                <div className="w-full sm:w-1/2 space-y-3 sm:space-y-4">
-                  {pieData.map((d, i) => (
-                    <div key={i} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800 pb-2">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{d.name}</span>
-                      <span className="text-xs sm:text-sm font-black" style={{ color: d.color }}>{d.value} Cases</span>
-                    </div>
-                  ))}
-                  <div className="pt-2">
-                    <div className="text-[9px] font-black uppercase text-slate-300 tracking-widest mb-1">Pass Rate</div>
-                    <div className="text-xl sm:text-2xl font-black text-emerald-500">{summaryStats?.passRate}%</div>
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
+                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Aggregate</div>
+                    <div className="text-2xl font-black text-slate-900 dark:text-white">{pieData.reduce((s,c) => s+c.value, 0)}</div>
                   </div>
                 </div>
-              </div>
-            </Card>
+              </Card>
 
-            <Card title="Issue Trends across Builds">
-              <div className="h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1E293B' : '#E2E8F0'} />
-                    <XAxis dataKey="build" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
-                    <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '12px', border: 'none', fontWeight: 'bold', fontSize: '10px' }} />
-                    <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{fontSize: '9px', fontWeight: 'bold', textTransform: 'uppercase'}} />
-                    <Bar name="Critical" dataKey="critical" fill="#F43F5E" radius={[4, 4, 0, 0]} />
-                    <Bar name="Major" dataKey="major" fill="#F59E0B" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </Card>
-          </div>
+              <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-8">
+                 <Card 
+                  title="Issue Severity Distribution Trend" 
+                  error={errorMap[activeTab]} 
+                  loading={loadingMap[activeTab]}
+                  suggestedGid={suggestedGidMap[activeTab]}
+                  onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
+                  onRetry={() => fetchData(activeTab)}
+                >
+                  <div className="h-[300px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px rgba(0,0,0,0.05)' }} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '20px', fontSize: '9px', fontWeight: '800' }} />
+                        <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12} />
+                        <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12} />
+                        <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
 
-          <Card title="Execution & Issue Detailed Logs">
-            <div className="overflow-x-auto custom-scrollbar">
-              <table className="w-full text-left min-w-[800px]">
-                <thead className="bg-slate-50 dark:bg-slate-800/50">
-                  <tr>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider">Build Info</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider">Platform</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider">Pass Rate</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider">Metrics</th>
-                    <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 tracking-wider text-right">Issues (C|M|m)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {filteredRows.map((row, idx) => {
-                    const passVal = parseFloat(row['Pass %'] || '0');
-                    return (
-                      <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+                <Card 
+                  title="Testing Methodology Trend" 
+                  error={errorMap[activeTab]} 
+                  loading={loadingMap[activeTab]}
+                  suggestedGid={suggestedGidMap[activeTab]}
+                  onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
+                  onRetry={() => fetchData(activeTab)}
+                >
+                  <div className="h-[300px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px rgba(0,0,0,0.05)' }} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '20px', fontSize: '9px', fontWeight: '800' }} />
+                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={12} />
+                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={12} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
+              </div>
+            </div>
+
+            <Card 
+              title="Execution Distribution Matrix" 
+              error={errorMap[activeTab]} 
+              loading={loadingMap[activeTab]}
+              suggestedGid={suggestedGidMap[activeTab]}
+              onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
+              onRetry={() => fetchData(activeTab)}
+            >
+              <div className="overflow-x-auto custom-scrollbar">
+                <table className="w-full text-left min-w-[1200px]">
+                  <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">RC Build Version</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Total</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Passed</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Failed</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">N/A</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Automation</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Manual</th>
+                      <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Defects (C|M|m)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {filteredRows.length > 0 ? filteredRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
                         <td className="px-6 py-5">
-                          <div className="text-sm font-extrabold text-slate-900 dark:text-white">{row['RC Build']}</div>
-                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">{row['Build Date']}</div>
-                        </td>
-                        <td className="px-6 py-5">
-                          <span className={`text-[10px] font-black uppercase px-2.5 py-1 rounded-lg ${
-                            row.Platform === 'Android' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                          }`}>
-                            {row.Platform}
-                          </span>
-                        </td>
-                        <td className="px-6 py-5">
-                          <div className="flex items-center gap-3">
-                            <div className="w-24 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                              <div 
-                                className={`h-full transition-all duration-500 ${passVal > 90 ? 'bg-emerald-500' : passVal > 70 ? 'bg-amber-500' : 'bg-rose-500'}`} 
-                                style={{ width: `${passVal}%` }}
-                              ></div>
-                            </div>
-                            <span className={`text-xs font-black ${passVal > 90 ? 'text-emerald-600' : 'text-amber-600'}`}>{row['Pass %']}</span>
+                          <div className="text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">
+                            {row['RC Build'] || row['Build'] || row['Build Version']}
+                          </div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase mt-1 tracking-widest">
+                            {row.Platform || row.OS} • {row['Build Date'] || row['Date'] || 'N/A'}
                           </div>
                         </td>
-                        <td className="px-6 py-5">
-                          <div className="text-[10px] font-bold text-slate-500">
-                            TC: {row['Total Test Cases']} | EX: {row['Executed']}
-                          </div>
-                        </td>
+                        <td className="px-6 py-5 text-xs font-black text-slate-500">{row['Total Test Cases'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-emerald-600 dark:text-emerald-400">{row['Passed'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-rose-500">{row['Failed'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-slate-400">{row['Not considered'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-violet-500">{row['Automation executed'] || row['Automation'] || 0}</td>
+                        <td className="px-6 py-5 text-xs font-black text-pink-500">{row['Manual executed'] || row['Manual'] || 0}</td>
                         <td className="px-6 py-5 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" />
-                            <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" />
-                            <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" />
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" />
+                            <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" />
+                            <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" />
                           </div>
                         </td>
                       </tr>
-                    );
-                  })}
+                    )) : (
+                      <tr>
+                        <td colSpan={8} className="px-6 py-20 text-center text-slate-400 font-black uppercase tracking-widest opacity-30">No matching records found</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        ) : (
+          <Card 
+            title={activeTab === 'new_issues' ? 'Issue Backlog' : 'Validation Queue'} 
+            error={errorMap[activeTab]} 
+            loading={loadingMap[activeTab]} 
+            suggestedGid={suggestedGidMap[activeTab]}
+            onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
+            onRetry={() => fetchData(activeTab)}
+          >
+            <div className="overflow-x-auto custom-scrollbar">
+              <table className="w-full text-left min-w-[1000px]">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800/50">
+                    {dataMap[activeTab]?.headers.map((h, i) => (
+                      <th key={i} className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredRows.map((row, i) => (
+                    <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                      {dataMap[activeTab]?.headers.map((h, j) => {
+                        const val = row[h];
+                        const isStatus = h.toLowerCase().includes('status');
+                        return (
+                          <td key={j} className="px-6 py-4">
+                            {isStatus ? (
+                              <span className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-lg shadow-sm ${
+                                String(val).toLowerCase().includes('pass') || String(val).toLowerCase().includes('fixed') || String(val).toLowerCase().includes('resolved')
+                                ? 'bg-emerald-500 text-white' : String(val).toLowerCase().includes('fail') || String(val).toLowerCase().includes('open') || String(val).toLowerCase().includes('block')
+                                ? 'bg-rose-500 text-white' : 'bg-slate-400 text-white'
+                              }`}>
+                                {val || 'PENDING'}
+                              </span>
+                            ) : (
+                              <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300">{val || '-'}</div>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-            {filteredRows.length === 0 && (
-              <div className="py-20 text-center">
-                <div className="text-3xl mb-3">🔍</div>
-                <div className="text-sm font-bold text-slate-400 uppercase tracking-widest">No matching records found</div>
-              </div>
-            )}
           </Card>
-        </div>
+        )}
       </main>
     </div>
   );
 }
 
-function MetricCard({ title, value, icon, color }: any) {
-  const colors: any = {
-    indigo: 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600',
-    blue: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600',
-    emerald: 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600',
-    rose: 'bg-rose-50 dark:bg-rose-900/20 text-rose-600',
-  };
+function MetricCard({ title, value, icon }: MetricCardProps) {
   return (
-    <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition-shadow group">
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover:text-slate-500 transition-colors">{title}</span>
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${colors[color]}`}>
-          {icon}
-        </div>
+    <div className="bg-white dark:bg-slate-900 p-7 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group hover:-translate-y-1 transition-all duration-300">
+      <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-20 transition-all rotate-12">
+        <span className="text-6xl">{icon}</span>
       </div>
+      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">{title}</span>
       <div className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">{value}</div>
     </div>
   );
 }
 
-function Card({ title, children, loading }: any) {
+function Card({ title, children, loading, error, suggestedGid, onRetry, onApplyFix }: CardProps) {
   return (
-    <div className={`bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden relative ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
-      <div className="px-6 py-5 border-b border-slate-50 dark:border-slate-800 flex items-center justify-between bg-slate-50/30 dark:bg-slate-800/20">
-        <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">{title}</h3>
-        {loading && <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>}
+    <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col min-h-[350px]">
+      <div className="px-8 py-5 border-b border-slate-50 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30">
+        <h3 className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-400">{title}</h3>
       </div>
-      <div className="p-6">
-        {children}
+      <div className="p-8 flex-1 relative flex flex-col">
+        {loading && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm">
+             <div className="w-12 h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        )}
+        {error ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-8">
+            <div className="w-16 h-16 bg-rose-50 dark:bg-rose-950/20 rounded-2xl flex items-center justify-center text-rose-500 text-3xl shadow-sm">⚠️</div>
+            <div className="max-w-md">
+              <h4 className="text-xs font-black uppercase text-rose-600 mb-2 tracking-widest">Synchronization Failure</h4>
+              <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 leading-relaxed italic mb-8">{error}</p>
+              
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 text-left">
+                <p className="text-[9px] font-black uppercase text-slate-400 mb-4 border-b pb-2 tracking-widest">Remediation Guidelines</p>
+                <ul className="text-[10px] font-bold text-slate-500 space-y-2 mb-8">
+                  <li className="flex gap-2"><span>1.</span><span>Verify individual tab <b>Publish to Web</b> settings (CSV)</span></li>
+                  <li className="flex gap-2"><span>2.</span><span>Confirm tab GID matches the source URL index</span></li>
+                </ul>
+                
+                {suggestedGid ? (
+                  <div className="bg-primary-50 dark:bg-primary-950/30 p-4 rounded-2xl border border-primary-100 dark:border-primary-900/50 animate-pulse">
+                    <p className="text-[10px] font-black text-primary-700 dark:text-primary-400 mb-3 uppercase tracking-tighter flex items-center gap-2">
+                       <span className="w-2 h-2 bg-primary-500 rounded-full"></span>
+                       GID Candidate Found: <span className="font-mono">{suggestedGid}</span>
+                    </p>
+                    <button 
+                      onClick={() => onApplyFix?.(suggestedGid)}
+                      className="w-full bg-primary-600 text-white py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/10"
+                    >
+                      Apply Auto-Fix & Refresh
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={onRetry} className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-[0.98]">Manual Re-Sync</button>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : children}
       </div>
     </div>
   );
 }
 
-function Badge({ value, color, label }: any) {
-  const tooltip = `${value} ${label}`;
-  if (!value || value === 0) return <span className="w-6 h-6 flex items-center justify-center text-slate-200 dark:text-slate-700 text-[10px] font-bold">-</span>;
+function Badge({ value, color, label, size = 'md' }: BadgeProps) {
+  const v = (!value || value === 0 || value === "" || isNaN(value)) ? '-' : value;
+  const sizeClasses = size === 'sm' ? 'w-6 h-6 text-[9px]' : 'w-8 h-8 text-[11px]';
   return (
-    <div 
-      title={tooltip} 
-      className={`w-7 h-7 rounded-lg flex items-center justify-center text-white text-[11px] font-black cursor-help hover:scale-110 transition-transform shadow-sm ${color}`}
-    >
-      {value}
+    <div className="relative group/badge inline-block">
+      <div className={`${sizeClasses} rounded-lg flex items-center justify-center font-black transition-all hover:scale-110 cursor-help ${v === '-' ? 'bg-slate-100 dark:bg-slate-800 text-slate-300 dark:text-slate-600' : `${color} text-white shadow-sm`}`}>{v}</div>
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[10px] font-black uppercase tracking-widest rounded-xl opacity-0 scale-90 group-hover/badge:opacity-100 group-hover/badge:scale-100 pointer-events-none transition-all duration-200 whitespace-nowrap z-[100] shadow-2xl border border-white/10 dark:border-slate-200 origin-bottom">
+        <div className="flex items-center gap-2"><span className={`w-1.5 h-1.5 rounded-full ${v === '-' ? 'bg-slate-400' : color}`}></span>{v === '-' ? `No ${label} Items` : `${v} ${label} Items`}</div>
+        <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-slate-900 dark:border-t-white"></div>
+      </div>
     </div>
   );
 }
