@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   PieChart, Pie, Cell
@@ -34,6 +34,7 @@ const DATE_COL_ALIASES = ['Build Date', 'Date', 'Reported Date', 'Created At'];
 const BUILD_TYPE_COL_ALIASES = ['Build Type', 'Type', 'Deployment Type', 'Category'];
 const BUILD_STATUS_COL_ALIASES = ['Status', 'Overall Status', 'Result', 'Execution Status'];
 
+// --- TYPES ---
 interface MetricCardProps {
   title: string;
   value: string | number;
@@ -58,6 +59,139 @@ interface BadgeProps {
   size?: 'sm' | 'md';
 }
 
+interface DateSelectorProps {
+  label: string;
+  value: string;
+  onChange: (val: string) => void;
+  placeholder?: string;
+}
+
+// --- CALENDAR COMPONENT ---
+function CalendarPopover({ value, onSelect, onClose }: { value: string, onSelect: (val: string) => void, onClose: () => void }) {
+  const [viewDate, setViewDate] = useState(() => value ? new Date(value) : new Date());
+  const calendarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [onClose]);
+
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  const handlePrevMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setViewDate(new Date(year, month - 1, 1));
+  };
+
+  const handleNextMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setViewDate(new Date(year, month + 1, 1));
+  };
+
+  const handleDaySelect = (day: number) => {
+    const selected = new Date(year, month, day);
+    // Format as YYYY-MM-DD for consistency with input[type=date]
+    const formatted = selected.toISOString().split('T')[0];
+    onSelect(formatted);
+    onClose();
+  };
+
+  const isSelected = (day: number) => {
+    if (!value) return false;
+    const d = new Date(value);
+    return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
+  };
+
+  const days = [];
+  for (let i = 0; i < firstDayOfMonth; i++) {
+    days.push(<div key={`empty-${i}`} className="h-8 w-8"></div>);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
+    days.push(
+      <button
+        key={i}
+        onClick={() => handleDaySelect(i)}
+        className={`h-8 w-8 rounded-lg text-[10px] font-bold transition-all hover:bg-primary-50 dark:hover:bg-primary-900/30 flex items-center justify-center ${
+          isSelected(i) 
+            ? 'bg-primary-600 text-white shadow-lg shadow-primary-500/20' 
+            : 'text-slate-600 dark:text-slate-300'
+        }`}
+      >
+        {i}
+      </button>
+    );
+  }
+
+  return (
+    <div ref={calendarRef} className="absolute top-full left-0 mt-2 z-[100] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-4 w-[260px] animate-in fade-in zoom-in-95 duration-200">
+      <div className="flex items-center justify-between mb-4 px-1">
+        <button onClick={handlePrevMonth} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors">
+          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+        </button>
+        <span className="text-[11px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
+          {months[month]} {year}
+        </span>
+        <button onClick={handleNextMonth} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors">
+          <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center mb-1">
+        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => (
+          <div key={d} className="text-[9px] font-black text-slate-400 uppercase py-1">{d}</div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {days}
+      </div>
+      {value && (
+        <button 
+          onClick={() => { onSelect(''); onClose(); }} 
+          className="w-full mt-4 py-2 text-[9px] font-black uppercase text-slate-400 hover:text-rose-500 transition-colors border-t border-slate-50 dark:border-slate-800 pt-3"
+        >
+          Clear Date
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DateSelector({ value, onChange, placeholder }: Omit<DateSelectorProps, 'label'>) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const formatDate = (val: string) => {
+    if (!val) return placeholder || 'Select date';
+    const date = new Date(val);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  return (
+    <div className="relative flex-1">
+      <div 
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 text-xs font-bold transition-all cursor-pointer flex items-center justify-between group"
+      >
+        <span className={value ? 'text-slate-900 dark:text-white' : 'text-slate-400'}>{formatDate(value)}</span>
+        <svg className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180 text-primary-500' : 'text-slate-300 group-hover:text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      </div>
+      {isOpen && <CalendarPopover value={value} onSelect={onChange} onClose={() => setIsOpen(false)} />}
+    </div>
+  );
+}
+
+// --- MAIN APP ---
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => 
     (localStorage.getItem('dashboard-theme') as 'light' | 'dark') || 'light'
@@ -244,8 +378,21 @@ export default function App() {
       const col = BUILD_COL_ALIASES.find(a => headers.includes(a));
       if (col) rows = rows.filter(r => String(r[col]) === selectedBuild);
     }
+    // Date Filtering
+    if (startDate || endDate) {
+      const dCol = DATE_COL_ALIASES.find(a => headers.includes(a));
+      if (dCol) {
+        rows = rows.filter(r => {
+          if (!r[dCol]) return false;
+          const buildDate = new Date(r[dCol]);
+          if (startDate && buildDate < new Date(startDate)) return false;
+          if (endDate && buildDate > new Date(endDate)) return false;
+          return true;
+        });
+      }
+    }
     return rows;
-  }, [dataMap, activeTab, selectedPlatform, selectedBuild]);
+  }, [dataMap, activeTab, selectedPlatform, selectedBuild, startDate, endDate]);
 
   const summaryStats = useMemo(() => {
     if (activeTab !== TABS_CONFIG.SUMMARY.id || !filteredRows.length) return null;
@@ -326,9 +473,9 @@ export default function App() {
           <div className="space-y-2 md:col-span-2 flex flex-col justify-end">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1 mb-1">Date Range</label>
             <div className="flex items-center gap-2">
-              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="flex-1 bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500" />
+              <DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" />
               <span className="text-slate-300 font-bold px-1">~</span>
-              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="flex-1 bg-slate-50 dark:bg-slate-800 p-3 rounded-2xl border-none text-xs font-bold focus:ring-2 focus:ring-primary-500" />
+              <DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" />
             </div>
           </div>
         </section>
