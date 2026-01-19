@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
-  PieChart, Pie, Cell
+  PieChart, Pie, Cell, LabelList
 } from 'recharts';
 import { DashboardData } from './types';
 import { parseCSV } from './utils/dataParser';
@@ -10,6 +10,7 @@ import { parseCSV } from './utils/dataParser';
 const PUBLISHED_ID = '2PACX-1vSrx7lqwi5bjj99rYho8jYGBYH47sYw2a5d62uPGrKS-HvSgiz6o-Rx_opsCMGNhVNRjJNx2bi6OTfK';
 const BASE_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?output=csv`;
 const INDEX_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pubhtml`;
+const REFRESH_INTERVAL = 120000; // 2 minutes
 
 const TABS_CONFIG = {
   SUMMARY: { id: 'summary', label: 'Report Summary', gid: '0', icon: '📊' },
@@ -45,8 +46,9 @@ interface CardProps {
   title: string;
   children?: React.ReactNode;
   loading?: boolean;
+  discoveryLoading?: boolean;
   error?: string | null;
-  tabGid?: string;
+  tabId?: string;
   onRetry?: () => void;
   onApplyFix?: (newGid: string) => void;
   suggestedGid?: string | null;
@@ -69,19 +71,27 @@ interface DateSelectorProps {
 // --- CUSTOM TOOLTIP COMPONENT ---
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
+    const title = label || payload[0].name;
     return (
-      <div className="bg-white dark:bg-slate-800 p-4 border border-slate-100 dark:border-slate-700 shadow-2xl rounded-2xl animate-in fade-in zoom-in-95 duration-200">
-        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 border-b border-slate-50 dark:border-slate-700 pb-2">{label}</p>
-        <div className="space-y-1.5">
-          {payload.map((entry: any, index: number) => (
-            <div key={index} className="flex items-center justify-between gap-8">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></div>
-                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{entry.name}</span>
+      <div className="bg-white dark:bg-slate-800 p-3 md:p-4 border border-slate-100 dark:border-slate-700 shadow-2xl rounded-2xl animate-in fade-in zoom-in-95 duration-200 min-w-[140px]">
+        <p className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 border-b border-slate-50 dark:border-slate-700 pb-2">{title}</p>
+        <div className="space-y-1.5 md:space-y-2">
+          {payload.map((entry: any, index: number) => {
+            const isPie = entry.payload && entry.payload.percent !== undefined;
+            const percentage = isPie ? `(${(entry.payload.percent * 100).toFixed(1)}%)` : '';
+            return (
+              <div key={index} className="flex items-center justify-between gap-4 md:gap-8">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color || entry.fill }}></div>
+                  <span className="text-[9px] md:text-[10px] font-bold text-slate-500 dark:text-slate-400">{entry.name}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] md:text-xs font-black text-slate-900 dark:text-white">{entry.value}</span>
+                  {percentage && <span className="text-[8px] md:text-[9px] font-medium text-slate-400">{percentage}</span>}
+                </div>
               </div>
-              <span className="text-xs font-black text-slate-900 dark:text-white">{entry.value}</span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     );
@@ -222,10 +232,14 @@ export default function App() {
   const [dataMap, setDataMap] = useState<Record<string, DashboardData>>({});
   const [activeTab, setActiveTab] = useState<string>(TABS_CONFIG.SUMMARY.id);
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
+  const [discoveryLoadingMap, setDiscoveryLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
   const [suggestedGidMap, setSuggestedGidMap] = useState<Record<string, string | null>>({});
   const [gidOverrides, setGidOverrides] = useState<Record<string, string>>({});
   const [lastUpdatedMap, setLastUpdatedMap] = useState<Record<string, Date>>({});
+  const [refreshProgress, setRefreshProgress] = useState(0);
+  const [isSyncingInBackground, setIsSyncingInBackground] = useState(false);
+  const [silentErrorMap, setSilentErrorMap] = useState<Record<string, boolean>>({});
   
   const [selectedPlatform, setSelectedPlatform] = useState<string>('All');
   const [selectedBuild, setSelectedBuild] = useState<string>('All');
@@ -239,11 +253,21 @@ export default function App() {
     else document.documentElement.classList.remove('dark');
   }, [isDark]);
 
-  const attemptGidDiscovery = async (tabLabel: string) => {
+  const attemptGidDiscovery = async (tabId: string, tabLabel: string) => {
+    setDiscoveryLoadingMap(prev => ({ ...prev, [tabId]: true }));
     try {
       const response = await fetch(`${INDEX_URL}?t=${Date.now()}`);
-      if (!response.ok) return null;
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new Error("Cannot discover tabs: Spreadsheet is private.");
+        }
+        return null;
+      }
+      
       const html = await response.text();
+      if (html.includes('ServiceLogin') || html.includes('Sign in - Google Accounts')) {
+        throw new Error("Discovery failed: Sheet is not published publicly.");
+      }
       
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
@@ -251,26 +275,29 @@ export default function App() {
       
       for (const tab of Array.from(tabs)) {
         const link = tab.querySelector('a');
-        if (link && link.textContent?.trim().toLowerCase().includes(tabLabel.toLowerCase())) {
-          const gid = link.getAttribute('href')?.replace('#', '');
-          if (gid) return gid;
+        const text = link?.textContent?.trim().toLowerCase() || '';
+        const target = tabLabel.toLowerCase();
+        
+        if (text === target || text.includes(target) || target.includes(text)) {
+          const gid = link?.getAttribute('href')?.replace('#', '');
+          if (gid) {
+            setSuggestedGidMap(prev => ({ ...prev, [tabId]: gid }));
+            return gid;
+          }
         }
       }
-      
-      const regex = new RegExp(`href="#([^"]+)"[^>]*>([^<]*${tabLabel}[^<]*)`, 'gi');
-      let match;
-      while ((match = regex.exec(html)) !== null) {
-        if (match[1]) return match[1].trim();
-      }
-    } catch (e) {
+    } catch (e: any) {
       console.warn("GID auto-discovery failed", e);
+      setErrorMap(prev => ({ ...prev, [tabId]: e.message }));
+    } finally {
+      setDiscoveryLoadingMap(prev => ({ ...prev, [tabId]: false }));
     }
     return null;
   };
 
   const fetchData = useCallback(async (tabId: string, silent = false) => {
     if (!silent) setLoadingMap(prev => ({ ...prev, [tabId]: true }));
-    setErrorMap(prev => ({ ...prev, [tabId]: null }));
+    if (!silent) setErrorMap(prev => ({ ...prev, [tabId]: null }));
     
     const config = Object.values(TABS_CONFIG).find(t => t.id === tabId);
     if (!config) return;
@@ -282,31 +309,60 @@ export default function App() {
       const response = await fetch(fetchUrl, { cache: 'no-store' });
       
       if (!response.ok) {
-        if (response.status === 400) {
-          const suggested = await attemptGidDiscovery(config.label);
-          if (suggested && suggested !== currentGid) {
-            setSuggestedGidMap(prev => ({ ...prev, [tabId]: suggested }));
-          }
-          throw new Error(`Invalid Tab Identifier (GID: ${currentGid}). Google Sheets returned a 400 error. This happens if tabs were moved or deleted.`);
+        if (response.status === 400 && !silent) {
+          attemptGidDiscovery(tabId, config.label);
+          throw new Error(`The requested tab (GID: ${currentGid}) was not found.`);
         }
-        throw new Error(`Failed to connect to spreadsheet (Status: ${response.status}).`);
+        throw new Error(`Connection error (Status: ${response.status}).`);
       }
       
       const csvText = await response.text();
-      if (csvText.includes('ServiceLogin') || csvText.includes('<html')) {
-        throw new Error("Access Denied. Sheet is either private or the Publish settings are incorrect.");
+      if (csvText.includes('ServiceLogin') || csvText.includes('Sign in - Google Accounts') || csvText.includes('<!DOCTYPE html>')) {
+        throw new Error("Authentication required. Please publish the sheet to the web.");
       }
 
       const parsed = parseCSV(csvText);
       setDataMap(prev => ({ ...prev, [tabId]: parsed }));
       setLastUpdatedMap(prev => ({ ...prev, [tabId]: new Date() }));
       setSuggestedGidMap(prev => ({ ...prev, [tabId]: null }));
+      setSilentErrorMap(prev => ({ ...prev, [tabId]: false }));
+      if (!silent) setErrorMap(prev => ({ ...prev, [tabId]: null }));
     } catch (error: any) {
-      setErrorMap(prev => ({ ...prev, [tabId]: error.message }));
+      if (silent) {
+        setSilentErrorMap(prev => ({ ...prev, [tabId]: true }));
+      } else {
+        setErrorMap(prev => ({ ...prev, [tabId]: error.message }));
+      }
     } finally {
       if (!silent) setLoadingMap(prev => ({ ...prev, [tabId]: false }));
     }
   }, [gidOverrides]);
+
+  const syncAll = useCallback(async (isAuto = false) => {
+    if (isAuto) setIsSyncingInBackground(true);
+    await Promise.all(Object.values(TABS_CONFIG).map(tab => fetchData(tab.id, isAuto)));
+    if (isAuto) setIsSyncingInBackground(false);
+    setRefreshProgress(0); // Reset timer on successful sync
+  }, [fetchData]);
+
+  // Initial fetch
+  useEffect(() => { syncAll(); }, []);
+
+  // Automatic refresh timer and progress bar
+  useEffect(() => {
+    const start = Date.now();
+    const intervalId = setInterval(() => {
+      const elapsed = Date.now() - start;
+      const progress = Math.min((elapsed / REFRESH_INTERVAL) * 100, 100);
+      setRefreshProgress(progress);
+      
+      if (elapsed >= REFRESH_INTERVAL) {
+        syncAll(true);
+      }
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [syncAll, lastUpdatedMap[activeTab]]);
 
   const applyGidFix = (tabId: string, newGid: string) => {
     setGidOverrides(prev => ({ ...prev, [tabId]: newGid }));
@@ -327,7 +383,6 @@ export default function App() {
   const handleBuildChange = (build: string) => {
     setSelectedBuild(build);
     if (build !== 'All') {
-      // Cross-reference data to automatically select the platform for this build
       for (const data of Object.values(dataMap)) {
         const bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a));
         const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a));
@@ -341,19 +396,6 @@ export default function App() {
       }
     }
   };
-
-  const syncAll = useCallback(async () => {
-    await Promise.all(Object.values(TABS_CONFIG).map(tab => fetchData(tab.id)));
-  }, [fetchData]);
-
-  useEffect(() => { syncAll(); }, [syncAll]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      Object.values(TABS_CONFIG).forEach(tab => fetchData(tab.id, true));
-    }, 120000); 
-    return () => clearInterval(interval);
-  }, [fetchData]);
 
   const platforms = useMemo(() => {
     const allPlatforms = new Set<string>();
@@ -373,10 +415,7 @@ export default function App() {
         data.rows.forEach(r => {
           const buildVal = String(r[bCol] || '').trim();
           if (!buildVal) return;
-          
-          if (selectedPlatform === 'All') {
-            allBuilds.add(buildVal);
-          } else if (pCol && String(r[pCol]) === selectedPlatform) {
+          if (selectedPlatform === 'All' || (pCol && String(r[pCol]) === selectedPlatform)) {
             allBuilds.add(buildVal);
           }
         });
@@ -409,7 +448,7 @@ export default function App() {
   const dynamicTitle = useMemo(() => {
     if (selectedBuild !== 'All') {
       const platformDisplay = selectedPlatform === 'All' ? 'All Platforms' : selectedPlatform;
-      return `RC Build Analytics for \u00A0\u00A0${platformDisplay} - ${selectedBuild}`;
+      return `RC Build Analytics \u00A0\u00A0 for \u00A0\u00A0${platformDisplay} - ${selectedBuild}`;
     }
     return 'RC Build Analytics';
   }, [selectedBuild, selectedPlatform]);
@@ -443,7 +482,6 @@ export default function App() {
       const col = BUILD_COL_ALIASES.find(a => headers.includes(a));
       if (col) rows = rows.filter(r => String(r[col]) === selectedBuild);
     }
-    // Date Filtering
     if (startDate || endDate) {
       const dCol = DATE_COL_ALIASES.find(a => headers.includes(a));
       if (dCol) {
@@ -495,8 +533,48 @@ export default function App() {
     }));
   }, [filteredRows]);
 
+  const hasIssuesReported = useMemo(() => {
+    return trendData.some(d => d.Critical > 0 || d.Major > 0 || d.Minor > 0);
+  }, [trendData]);
+
+  const barLabelProps = {
+    position: 'top' as const,
+    fontSize: 8,
+    fontWeight: '800',
+    fill: isDark ? '#94a3b8' : '#64748b',
+    offset: 8
+  };
+
+  const renderPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }: any) => {
+    const RADIAN = Math.PI / 180;
+    const radius = outerRadius + 18; 
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    const percentage = (percent * 100).toFixed(1);
+
+    return (
+      <text 
+        x={x} 
+        y={y} 
+        fill={isDark ? '#94a3b8' : '#64748b'} 
+        textAnchor={x > cx ? 'start' : 'end'} 
+        dominantBaseline="central"
+        className="text-[9px] font-black uppercase tracking-tighter"
+      >
+        {`${name} ${percentage}%`}
+      </text>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#020617] pb-12 transition-all">
+      <div className="fixed top-0 left-0 right-0 h-1 bg-slate-100 dark:bg-slate-900 z-[60] overflow-hidden">
+        <div 
+          className="h-full bg-primary-600 transition-all duration-1000 ease-linear"
+          style={{ width: `${refreshProgress}%` }}
+        />
+      </div>
+
       <nav className="sticky top-0 z-50 glass border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 py-4 shadow-sm">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 md:gap-3 min-w-0">
@@ -504,35 +582,34 @@ export default function App() {
              <div className="min-w-0">
                <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 dark:text-primary-400 truncate">{dynamicTitle}</h1>
                <div className="flex items-center gap-1.5 md:gap-2 mt-0.5">
-                 <span className={`w-1 h-1 md:w-1.5 md:h-1.5 rounded-full flex-shrink-0 ${Object.values(loadingMap).some(v => v) ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-                 <span className="text-[8px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">
-                   Synced: {lastUpdatedMap[activeTab]?.toLocaleTimeString() || 'Waiting...'}
+                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors ${isSyncingInBackground ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+                 <span className="text-[8px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate flex items-center gap-1.5">
+                   {isSyncingInBackground ? 'Syncing...' : `Synced: ${lastUpdatedMap[activeTab]?.toLocaleTimeString() || 'Waiting...'}`}
+                   {silentErrorMap[activeTab] && (
+                     <span className="text-rose-500 flex items-center gap-1" title="Background sync failed. Showing last successful data.">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                        STALE
+                     </span>
+                   )}
                  </span>
                </div>
              </div>
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} className="p-2 md:p-2.5 rounded-lg md:rounded-xl bg-slate-100 dark:bg-slate-800 hover:scale-105 transition-transform text-sm md:text-base">{isDark ? '☀️' : '🌙'}</button>
-            <button onClick={syncAll} disabled={Object.values(loadingMap).some(v => v)} className="px-3 md:px-5 py-2 md:py-2.5 bg-primary-600 text-white rounded-lg md:rounded-xl text-[10px] md:text-xs font-black uppercase hover:bg-primary-700 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-primary-500/10">Sync</button>
+            <button onClick={() => syncAll()} disabled={Object.values(loadingMap).some(v => v)} className="px-3 md:px-5 py-2 md:py-2.5 bg-primary-600 text-white rounded-lg md:rounded-xl text-[10px] md:text-xs font-black uppercase hover:bg-primary-700 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-primary-500/10">Sync</button>
           </div>
         </div>
       </nav>
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 md:py-8 space-y-6 md:space-y-8">
-        {/* FILTERS */}
         <section className="bg-white dark:bg-slate-900 rounded-[1.5rem] md:rounded-[2rem] p-4 md:p-6 border border-slate-200 dark:border-slate-800 shadow-sm relative">
           {isFiltersActive && (
-            <button 
-              onClick={handleClearFilters}
-              className="absolute top-4 right-6 text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-500 transition-all flex items-center gap-1.5 active:scale-95 group"
-            >
-              <svg className="w-3.5 h-3.5 group-hover:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+            <button onClick={handleClearFilters} className="absolute top-4 right-6 text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-500 transition-all flex items-center gap-1.5 active:scale-95 group">
+              <svg className="w-3.5 h-3.5 group-hover:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               Clear Filters
             </button>
           )}
-          
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-6 mt-2">
             <div className="space-y-1.5 md:space-y-2">
               <label className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Platform</label>
@@ -559,16 +636,13 @@ export default function App() {
           </div>
         </section>
 
-        {/* METADATA BAR */}
         {buildMetadata && (
           <div className="bg-primary-600/5 dark:bg-primary-400/5 border border-primary-100 dark:border-primary-900/30 rounded-2xl md:rounded-3xl p-4 md:p-5 flex flex-wrap items-center gap-y-4 gap-x-6 md:gap-8 shadow-sm animate-in slide-in-from-top-4 duration-500">
             <div className="flex flex-col">
               <span className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1">Selected Build</span>
               <div className="flex items-center gap-2 md:gap-3">
                 <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white">{buildMetadata.build}</span>
-                <span className={`text-white text-[8px] md:text-[9px] font-black uppercase px-2 py-0.5 md:px-2.5 md:py-1 rounded-md md:rounded-lg shadow-lg ${getBuildTypeColor(buildMetadata.type)}`}>
-                  {buildMetadata.type}
-                </span>
+                <span className={`text-white text-[8px] md:text-[9px] font-black uppercase px-2 py-0.5 md:px-2.5 md:py-1 rounded-md md:rounded-lg shadow-lg ${getBuildTypeColor(buildMetadata.type)}`}>{buildMetadata.type}</span>
               </div>
             </div>
             <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden md:block"></div>
@@ -592,21 +666,15 @@ export default function App() {
           </div>
         )}
 
-        {/* TABS */}
         <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-[1rem] md:rounded-[1.5rem] w-full md:w-auto overflow-x-auto no-scrollbar shadow-inner gap-1">
           {Object.values(TABS_CONFIG).map((tab) => (
-            <button 
-              key={tab.id} 
-              onClick={() => setActiveTab(tab.id)} 
-              className={`px-4 md:px-6 py-2.5 md:py-3 rounded-lg md:rounded-2xl text-[9px] md:text-[11px] font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 active:scale-95 ${activeTab === tab.id ? 'bg-white dark:bg-slate-800 text-primary-600 shadow-md' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'}`}
-            >
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`px-4 md:px-6 py-2.5 md:py-3 rounded-lg md:rounded-2xl text-[9px] md:text-[11px] font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 active:scale-95 ${activeTab === tab.id ? 'bg-white dark:bg-slate-800 text-primary-600 shadow-md' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'}`}>
               <span className="text-sm md:text-base">{tab.icon}</span>{tab.label}
               {errorMap[tab.id] && <span className="text-rose-500 animate-pulse">!</span>}
             </button>
           ))}
         </div>
 
-        {/* CONTENT */}
         {activeTab === 'summary' ? (
           <div className="space-y-6 md:space-y-8 animate-in fade-in duration-500">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -621,9 +689,11 @@ export default function App() {
                 title="Result Distribution" 
                 error={errorMap[activeTab]} 
                 loading={loadingMap[activeTab]} 
+                discoveryLoading={discoveryLoadingMap[activeTab]}
                 suggestedGid={suggestedGidMap[activeTab]}
                 onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
                 onRetry={() => fetchData(activeTab)}
+                tabId={activeTab}
               >
                 <div className="h-[250px] md:h-[300px] relative">
                   <ResponsiveContainer width="100%" height="100%">
@@ -633,15 +703,16 @@ export default function App() {
                         cx="50%" 
                         cy="50%" 
                         innerRadius={60} 
-                        outerRadius={85} 
-                        paddingAngle={8} 
+                        outerRadius={75} 
+                        paddingAngle={6} 
                         dataKey="value"
-                        label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                        label={renderPieLabel}
                         labelLine={true}
+                        minAngle={10}
                       >
                         {pieData.map((e, i) => <Cell key={i} fill={e.color} stroke="none" />)}
                       </Pie>
-                      <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '12px' }} />
+                      <Tooltip content={<CustomTooltip />} />
                     </PieChart>
                   </ResponsiveContainer>
                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
@@ -656,23 +727,32 @@ export default function App() {
                   title="Issue Severity Trend" 
                   error={errorMap[activeTab]} 
                   loading={loadingMap[activeTab]}
+                  discoveryLoading={discoveryLoadingMap[activeTab]}
                   suggestedGid={suggestedGidMap[activeTab]}
                   onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
                   onRetry={() => fetchData(activeTab)}
+                  tabId={activeTab}
                 >
                   <div className="h-[250px] md:h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
-                        <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={10} />
-                        <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={10} />
-                        <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={10} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                    {hasIssuesReported ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={trendData} margin={{ top: 15, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                          <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
+                          <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
+                          <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12}><LabelList {...barLabelProps} /></Bar>
+                          <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12}><LabelList {...barLabelProps} /></Bar>
+                          <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12}><LabelList {...barLabelProps} /></Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-full text-center space-y-4 animate-in fade-in zoom-in duration-500">
+                        <div className="w-16 h-16 bg-emerald-50 dark:bg-emerald-950/20 rounded-full flex items-center justify-center text-3xl shadow-sm border border-emerald-100 dark:border-emerald-900/30">🎉</div>
+                        <p className="text-[10px] md:text-xs font-black uppercase text-slate-400 tracking-[0.2em] max-w-[200px] leading-relaxed">No issues reported in this build</p>
+                      </div>
+                    )}
                   </div>
                 </Card>
 
@@ -680,20 +760,22 @@ export default function App() {
                   title="Testing Methodology Trend" 
                   error={errorMap[activeTab]} 
                   loading={loadingMap[activeTab]}
+                  discoveryLoading={discoveryLoadingMap[activeTab]}
                   suggestedGid={suggestedGidMap[activeTab]}
                   onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
                   onRetry={() => fetchData(activeTab)}
+                  tabId={activeTab}
                 >
                   <div className="h-[250px] md:h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <BarChart data={trendData} margin={{ top: 15, right: 10, left: -20, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
                         <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 8, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
                         <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '15px', fontSize: '8px', fontWeight: '800' }} />
-                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={10} />
-                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={10} />
+                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={14}><LabelList {...barLabelProps} /></Bar>
+                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={14}><LabelList {...barLabelProps} /></Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -705,9 +787,11 @@ export default function App() {
               title="Execution Matrix" 
               error={errorMap[activeTab]} 
               loading={loadingMap[activeTab]}
+              discoveryLoading={discoveryLoadingMap[activeTab]}
               suggestedGid={suggestedGidMap[activeTab]}
               onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
               onRetry={() => fetchData(activeTab)}
+              tabId={activeTab}
             >
               <div className="overflow-x-auto no-scrollbar scroll-smooth">
                 <table className="w-full text-left min-w-[900px]">
@@ -727,12 +811,8 @@ export default function App() {
                     {filteredRows.length > 0 ? filteredRows.map((row, idx) => (
                       <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
                         <td className="px-4 py-4">
-                          <div className="text-[11px] md:text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">
-                            {row['RC Build'] || row['Build'] || row['Build Version']}
-                          </div>
-                          <div className="text-[8px] text-slate-400 font-bold uppercase mt-0.5 tracking-widest">
-                            {row.Platform || row.OS} • {row['Build Date'] || row['Date'] || 'N/A'}
-                          </div>
+                          <div className="text-[11px] md:text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">{row['RC Build'] || row['Build'] || row['Build Version']}</div>
+                          <div className="text-[8px] text-slate-400 font-bold uppercase mt-0.5 tracking-widest">{row.Platform || row.OS} • {row['Build Date'] || row['Date'] || 'N/A'}</div>
                         </td>
                         <td className="px-4 py-4 text-[10px] md:text-xs font-black text-slate-500">{row['Total Test Cases'] || 0}</td>
                         <td className="px-4 py-4 text-[10px] md:text-xs font-black text-emerald-600 dark:text-emerald-400">{row['Passed'] || 0}</td>
@@ -749,9 +829,7 @@ export default function App() {
                         </td>
                       </tr>
                     )) : (
-                      <tr>
-                        <td colSpan={8} className="px-4 py-16 text-center text-slate-400 font-black uppercase tracking-widest opacity-30 text-[10px]">No matching records</td>
-                      </tr>
+                      <tr><td colSpan={8} className="px-4 py-16 text-center text-slate-400 font-black uppercase tracking-widest opacity-30 text-[10px]">No matching records</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -763,9 +841,11 @@ export default function App() {
             title={activeTab === 'new_issues' ? 'Issue Backlog' : 'Validation Queue'} 
             error={errorMap[activeTab]} 
             loading={loadingMap[activeTab]} 
+            discoveryLoading={discoveryLoadingMap[activeTab]}
             suggestedGid={suggestedGidMap[activeTab]}
             onApplyFix={(newGid) => applyGidFix(activeTab, newGid)}
             onRetry={() => fetchData(activeTab)}
+            tabId={activeTab}
           >
             <div className="overflow-x-auto no-scrollbar scroll-smooth">
               <table className="w-full text-left min-w-[800px]">
@@ -789,9 +869,7 @@ export default function App() {
                                 String(val).toLowerCase().includes('pass') || String(val).toLowerCase().includes('fixed') || String(val).toLowerCase().includes('resolved')
                                 ? 'bg-emerald-500 text-white' : String(val).toLowerCase().includes('fail') || String(val).toLowerCase().includes('open') || String(val).toLowerCase().includes('block')
                                 ? 'bg-rose-500 text-white' : 'bg-slate-400 text-white'
-                              }`}>
-                                {val || 'PENDING'}
-                              </span>
+                              }`}>{val || 'PENDING'}</span>
                             ) : (
                               <div className="text-[10px] font-bold text-slate-600 dark:text-slate-300 line-clamp-2">{val || '-'}</div>
                             )}
@@ -813,29 +891,30 @@ export default function App() {
 function MetricCard({ title, value, icon }: MetricCardProps) {
   return (
     <div className="bg-white dark:bg-slate-900 p-5 md:p-7 rounded-[1.5rem] md:rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group hover:-translate-y-1 transition-all duration-300">
-      <div className="absolute top-0 right-0 p-3 md:p-4 opacity-5 group-hover:opacity-20 transition-all rotate-12">
-        <span className="text-4xl md:text-6xl">{icon}</span>
-      </div>
+      <div className="absolute top-0 right-0 p-3 md:p-4 opacity-5 group-hover:opacity-20 transition-all rotate-12"><span className="text-4xl md:text-6xl">{icon}</span></div>
       <span className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 md:mb-2">{title}</span>
       <div className="text-xl md:text-3xl font-black text-slate-900 dark:text-white tracking-tight">{value}</div>
     </div>
   );
 }
 
-function Card({ title, children, loading, error, suggestedGid, onRetry, onApplyFix }: CardProps) {
+function Card({ title, children, loading, discoveryLoading, error, suggestedGid, onRetry, onApplyFix, tabId }: CardProps) {
   return (
     <div className="bg-white dark:bg-slate-900 rounded-[1.5rem] md:rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col min-h-[300px] md:min-h-[350px]">
       <div className="px-6 md:px-8 py-4 md:py-5 border-b border-slate-50 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30">
         <h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.2em] md:tracking-[0.25em] text-slate-400">{title}</h3>
       </div>
       <div className="p-4 md:p-8 flex-1 relative flex flex-col">
-        {loading && (
+        {(loading || discoveryLoading) && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm">
-             <div className="w-8 h-8 md:w-12 md:h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
+             <div className="flex flex-col items-center gap-4">
+               <div className="w-8 h-8 md:w-12 md:h-12 border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
+               {discoveryLoading && <span className="text-[10px] font-black uppercase text-primary-600 animate-pulse tracking-widest">Searching for correct tab...</span>}
+             </div>
           </div>
         )}
         {error ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-4 md:py-8">
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-4 md:py-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <div className="w-12 h-12 md:w-16 md:h-16 bg-rose-50 dark:bg-rose-950/20 rounded-2xl flex items-center justify-center text-rose-500 text-2xl md:text-3xl shadow-sm">⚠️</div>
             <div className="max-w-xs md:max-w-md px-4">
               <h4 className="text-[10px] md:text-xs font-black uppercase text-rose-600 mb-2 tracking-widest">Sync Failure</h4>
@@ -844,25 +923,25 @@ function Card({ title, children, loading, error, suggestedGid, onRetry, onApplyF
               <div className="bg-slate-50 dark:bg-slate-800/50 p-4 md:p-6 rounded-2xl md:rounded-3xl border border-slate-100 dark:border-slate-800 text-left">
                 <p className="text-[8px] md:text-[9px] font-black uppercase text-slate-400 mb-3 md:mb-4 border-b pb-2 tracking-widest">Remediation</p>
                 <ul className="text-[9px] md:text-[10px] font-bold text-slate-500 space-y-2 mb-6 md:mb-8">
-                  <li className="flex gap-2"><span>1.</span><span>Verify Publish to Web (CSV)</span></li>
-                  <li className="flex gap-2"><span>2.</span><span>Confirm tab GID accuracy</span></li>
+                  <li className="flex gap-2"><span>1.</span><span>Verify the Google Sheet is "Published to the web" (CSV)</span></li>
+                  <li className="flex gap-2"><span>2.</span><span>Confirm tab names match: "{Object.values(TABS_CONFIG).find(t => t.id === tabId)?.label || 'Required Tab'}"</span></li>
                 </ul>
                 
                 {suggestedGid ? (
-                  <div className="bg-primary-50 dark:bg-primary-950/30 p-3 md:p-4 rounded-xl md:rounded-2xl border border-primary-100 dark:border-primary-900/50 animate-pulse">
+                  <div className="bg-primary-50 dark:bg-primary-950/30 p-3 md:p-4 rounded-xl md:rounded-2xl border border-primary-100 dark:border-primary-900/50 animate-in zoom-in duration-500">
                     <p className="text-[9px] md:text-[10px] font-black text-primary-700 dark:text-primary-400 mb-2 md:mb-3 uppercase tracking-tighter flex items-center gap-2">
-                       <span className="w-1.5 h-1.5 bg-primary-500 rounded-full"></span>
-                       Suggested GID: <span className="font-mono">{suggestedGid}</span>
+                       <span className="w-1.5 h-1.5 bg-primary-500 rounded-full animate-pulse"></span>
+                       Potential Fix Found (GID: <span className="font-mono">{suggestedGid}</span>)
                     </p>
                     <button 
                       onClick={() => onApplyFix?.(suggestedGid)}
-                      className="w-full bg-primary-600 text-white py-2 md:py-2.5 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/10"
+                      className="w-full bg-primary-600 text-white py-2 md:py-2.5 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/10 active:scale-95"
                     >
-                      Apply Fix
+                      Apply Fix & Sync
                     </button>
                   </div>
                 ) : (
-                  <button onClick={onRetry} className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-2.5 md:py-3 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-[0.98]">Manual Sync</button>
+                  <button onClick={onRetry} className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-2.5 md:py-3 rounded-lg md:rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-[0.98]">Manual Retry</button>
                 )}
               </div>
             </div>
@@ -876,12 +955,18 @@ function Card({ title, children, loading, error, suggestedGid, onRetry, onApplyF
 function Badge({ value, color, label, size = 'md' }: BadgeProps) {
   const v = (!value || value === 0 || value === "" || isNaN(value)) ? '-' : value;
   const sizeClasses = size === 'sm' ? 'w-5 h-5 md:w-6 md:h-6 text-[8px] md:text-[9px]' : 'w-7 h-7 md:w-8 md:h-8 text-[10px] md:text-[11px]';
+  
+  const tooltipContent = v === '-' 
+    ? `No ${label} Issues Reported` 
+    : `${v} ${label} Issue${v === 1 ? '' : 's'}`;
+
   return (
     <div className="relative group/badge inline-block">
-      <div className={`${sizeClasses} rounded-md md:rounded-lg flex items-center justify-center font-black transition-all hover:scale-110 cursor-help ${v === '-' ? 'bg-slate-100 dark:bg-slate-800 text-slate-300 dark:text-slate-600' : `${color} text-white shadow-sm`}`}>{v}</div>
-      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[9px] md:text-[10px] font-black uppercase tracking-widest rounded-lg md:rounded-xl opacity-0 scale-90 group-hover/badge:opacity-100 group-hover/badge:scale-100 pointer-events-none transition-all duration-200 whitespace-nowrap z-[100] shadow-2xl border border-white/10 dark:border-slate-200 origin-bottom">
-        <div className="flex items-center gap-2"><span className={`w-1.5 h-1.5 rounded-full ${v === '-' ? 'bg-slate-400' : color}`}></span>{v === '-' ? `No ${label} Items` : `${v} ${label} Items`}</div>
-        <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-slate-900 dark:border-t-white"></div>
+      <div className={`${sizeClasses} rounded-md md:rounded-lg flex items-center justify-center font-black transition-all hover:scale-110 cursor-help ${v === '-' ? 'bg-slate-100 dark:bg-slate-800 text-slate-300 dark:text-slate-600' : `${color} text-white shadow-sm shadow-black/10`}`}>{v}</div>
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 px-3.5 py-2 bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[9px] md:text-[10px] font-black uppercase tracking-widest rounded-xl opacity-0 scale-90 group-hover/badge:opacity-100 group-hover/badge:scale-100 pointer-events-none transition-all duration-300 ease-out whitespace-nowrap z-[100] shadow-2xl border border-white/10 dark:border-slate-200 origin-bottom flex items-center gap-2.5">
+        <span className={`w-2 h-2 rounded-full ring-2 ring-white/10 dark:ring-slate-200/50 ${v === '-' ? 'bg-slate-400' : color}`}></span>
+        {tooltipContent}
+        <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1.5 border-[6px] border-transparent border-t-slate-900 dark:border-t-white drop-shadow-xl"></div>
       </div>
     </div>
   );
