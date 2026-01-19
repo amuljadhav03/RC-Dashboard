@@ -66,6 +66,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5 border-b border-slate-50 dark:border-slate-800 pb-1.5">{title}</p>
       <div className="space-y-1.5">
         {payload.map((entry: any, index: number) => {
+          const isPie = entry.payload?.percent !== undefined || entry.percent !== undefined;
           const percent = entry.payload?.percent !== undefined ? entry.payload.percent : entry.percent;
           return (
             <div key={index} className="flex items-center justify-between gap-4">
@@ -75,7 +76,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-[11px] font-black text-slate-900 dark:text-white">{entry.value}</span>
-                {percent !== undefined && (
+                {isPie && percent !== undefined && (
                   <span className="text-[9px] font-black text-primary-500 bg-primary-50 dark:bg-primary-900/30 px-2 py-0.5 rounded-md">
                     {(percent * 100).toFixed(1)}%
                   </span>
@@ -239,15 +240,24 @@ export default function App() {
 
   const pieData = useMemo(() => {
     if (activeTab !== TABS_CONFIG.SUMMARY.id || !filteredRows.length) return [];
+    const totals = filteredRows.reduce((acc, r) => ({
+      passed: acc.passed + (Number(r.Passed) || 0),
+      failed: acc.failed + (Number(r.Failed) || 0),
+      notConsidered: acc.notConsidered + (Number(r['Not considered']) || 0),
+    }), { passed: 0, failed: 0, notConsidered: 0 });
+    
+    const sum = totals.passed + totals.failed + totals.notConsidered;
+
     return [
-      { name: 'Pass', value: filteredRows.reduce((s, r) => s + (Number(r.Passed) || 0), 0), color: EXECUTION_COLORS.pass },
-      { name: 'Fail', value: filteredRows.reduce((s, r) => s + (Number(r.Failed) || 0), 0), color: EXECUTION_COLORS.fail },
-      { name: 'N/A', value: filteredRows.reduce((s, r) => s + (Number(r['Not considered']) || 0), 0), color: EXECUTION_COLORS.notConsidered },
+      { name: 'Pass', value: totals.passed, color: EXECUTION_COLORS.pass, percent: sum ? totals.passed / sum : 0 },
+      { name: 'Fail', value: totals.failed, color: EXECUTION_COLORS.fail, percent: sum ? totals.failed / sum : 0 },
+      { name: 'N/A', value: totals.notConsidered, color: EXECUTION_COLORS.notConsidered, percent: sum ? totals.notConsidered / sum : 0 },
     ];
   }, [filteredRows, activeTab]);
 
   const trendData = useMemo(() => filteredRows.slice(0, 10).reverse().map(r => ({
-    name: r['RC Build'] || r['Build'] || r['Build Version'],
+    name: String(r['RC Build'] || r['Build'] || r['Build Version']).split(' ').pop() || '',
+    fullName: r['RC Build'] || r['Build'] || r['Build Version'],
     Passed: Number(r.Passed) || 0,
     Failed: Number(r.Failed) || 0,
     Critical: Number(r['Critical Issues']) || 0,
@@ -261,27 +271,67 @@ export default function App() {
 
   const renderPieLabel = (props: any) => {
     const { cx, cy, midAngle, outerRadius, percent, name, value, fill } = props;
-    if (percent < 0.03) return null;
-    const RADIAN = Math.PI / 180, sin = Math.sin(-RADIAN * midAngle), cos = Math.cos(-RADIAN * midAngle);
-    const sx = cx + (outerRadius + 4) * cos, sy = cy + (outerRadius + 4) * sin, mx = cx + (outerRadius + 28) * cos, my = cy + (outerRadius + 28) * sin, ex = mx + (cos >= 0 ? 1 : -1) * 20, ey = my;
+    if (percent < 0.05) return null; // Hide very small segment labels to avoid clutter
+    
+    const RADIAN = Math.PI / 180;
+    const sin = Math.sin(-RADIAN * midAngle);
+    const cos = Math.cos(-RADIAN * midAngle);
+    
+    // Position labels significantly outside to avoid center overlap
+    const sx = cx + (outerRadius + 8) * cos;
+    const sy = cy + (outerRadius + 8) * sin;
+    const mx = cx + (outerRadius + 30) * cos;
+    const my = cy + (outerRadius + 30) * sin;
+    const ex = mx + (cos >= 0 ? 1 : -1) * 12;
+    const ey = my;
+    const textAnchor = cos >= 0 ? 'start' : 'end';
+
     return (
       <g>
-        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={2} opacity={0.6} />
-        <circle cx={ex} cy={ey} r={2.5} fill={fill} />
-        <text x={ex + (cos >= 0 ? 8 : -8)} y={ey} textAnchor={cos >= 0 ? 'start' : 'end'} fill={isDark ? '#cbd5e1' : '#1e293b'} dominantBaseline="central" className="text-[11px] md:text-[12px] font-black uppercase tracking-tight">{name}: {value}</text>
-        <text x={ex + (cos >= 0 ? 8 : -8)} y={ey} dy={14} textAnchor={cos >= 0 ? 'start' : 'end'} fill={isDark ? '#64748b' : '#94a3b8'} dominantBaseline="central" className="text-[10px] md:text-[11px] font-bold">({(percent * 100).toFixed(1)}%)</text>
+        <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} opacity={0.5} />
+        <circle cx={ex} cy={ey} r={2} fill={fill} />
+        <text 
+          x={ex + (cos >= 0 ? 6 : -6)} 
+          y={ey} 
+          textAnchor={textAnchor} 
+          fill={isDark ? '#cbd5e1' : '#1e293b'} 
+          dominantBaseline="central" 
+          className="text-[9px] md:text-[11px] font-black uppercase tracking-tight"
+        >
+          {name}: {value}
+        </text>
+        <text 
+          x={ex + (cos >= 0 ? 6 : -6)} 
+          y={ey} 
+          dy={12} 
+          textAnchor={textAnchor} 
+          fill={isDark ? '#64748b' : '#94a3b8'} 
+          dominantBaseline="central" 
+          className="text-[8px] md:text-[10px] font-bold"
+        >
+          ({(percent * 100).toFixed(1)}%)
+        </text>
       </g>
     );
   };
 
   const getBuildTypeColor = (type: string) => {
-    const t = type.toLowerCase();
+    const t = String(type).toLowerCase();
     if (t.includes('hotfix')) return 'bg-rose-600';
     if (t.includes('planned')) return 'bg-emerald-600';
     if (t.includes('emergency')) return 'bg-orange-500';
     if (t.includes('adhoc') || t.includes('ad-hoc')) return 'bg-amber-500';
     if (t.includes('release')) return 'bg-primary-600';
     return 'bg-slate-500'; 
+  };
+
+  const getStatusColor = (status: string) => {
+    const s = String(status).toLowerCase();
+    if (s.includes('complete') || s.includes('pass') || s.includes('success')) return 'bg-emerald-500';
+    if (s.includes('progress') || s.includes('running') || s.includes('pending')) return 'bg-amber-500';
+    if (s.includes('fail') || s.includes('error') || s.includes('critical')) return 'bg-rose-500';
+    if (s.includes('not') || s.includes('n/a') || s.includes('skipped')) return 'bg-slate-400';
+    return 'bg-primary-500';
   };
 
   return (
@@ -322,7 +372,12 @@ export default function App() {
           <div className="bg-primary-600/5 dark:bg-primary-400/5 border border-primary-100 dark:border-primary-900/30 rounded-[2rem] p-6 flex flex-wrap gap-8 animate-in slide-in-from-top-4">
             <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Build Version</span><div className="flex items-center gap-3"><span className="text-base font-black text-slate-900 dark:text-white">{buildMetadata.build}</span><span className={`text-white text-[10px] font-black uppercase px-2.5 py-1 rounded-lg ${getBuildTypeColor(buildMetadata.type)} shadow-sm transition-colors duration-300`}>{buildMetadata.type}</span></div></div>
             <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Date</span><span className="text-sm font-bold text-slate-700 dark:text-slate-300">{buildMetadata.date}</span></div>
-            <div className="flex flex-col"><span className="text-[9px] font-black uppercase text-slate-400 mb-1">Status</span><span className={`text-sm font-black uppercase ${buildMetadata.status.toLowerCase().includes('pass') ? 'text-emerald-500' : 'text-rose-500'}`}>{buildMetadata.status}</span></div>
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase text-slate-400 mb-1">Status</span>
+              <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-xl text-white shadow-sm inline-block ${getStatusColor(buildMetadata.status)}`}>
+                {buildMetadata.status}
+              </span>
+            </div>
           </div>
         )}
 
@@ -351,8 +406,8 @@ export default function App() {
                         data={pieData} 
                         cx="50%" 
                         cy="50%" 
-                        innerRadius={68} 
-                        outerRadius={85} 
+                        innerRadius={50} // Reduced inner radius to give more space for total text
+                        outerRadius={70} // Reduced outer radius to give more space for labels
                         paddingAngle={5} 
                         dataKey="value" 
                         label={renderPieLabel} 
@@ -366,8 +421,8 @@ export default function App() {
                     </PieChart>
                   </ResponsiveContainer>
                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-[50]">
-                    <div className="text-[11px] font-black text-slate-400 uppercase mb-1 tracking-widest leading-none">Total</div>
-                    <div className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white leading-tight">{pieData.reduce((s, c) => s + c.value, 0)}</div>
+                    <div className="text-[10px] font-black text-slate-400 uppercase mb-0.5 tracking-widest leading-none">Total</div>
+                    <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">{pieData.reduce((s, c) => s + c.value, 0)}</div>
                   </div>
                 </div>
               </Card>
@@ -376,20 +431,20 @@ export default function App() {
                 <Card title="Issue Trend" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 25, right: 10, left: -20, bottom: 0 }}>
+                      <BarChart data={trendData} margin={{ top: 30, right: 10, left: -25, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '25px', fontSize: '11px', fontWeight: '800' }} />
-                        <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[6, 6, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '30px', fontSize: '10px', fontWeight: '800' }} />
+                        <Bar name="Critical" dataKey="Critical" fill={EXECUTION_COLORS.critical} radius={[4, 4, 0, 0]} barSize={12}>
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
                         </Bar>
-                        <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[6, 6, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        <Bar name="Major" dataKey="Major" fill={EXECUTION_COLORS.major} radius={[4, 4, 0, 0]} barSize={12}>
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
                         </Bar>
-                        <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[6, 6, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        <Bar name="Minor" dataKey="Minor" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={12}>
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -398,17 +453,17 @@ export default function App() {
                 <Card title="Methodology" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 25, right: 10, left: -20, bottom: 0 }}>
+                      <BarChart data={trendData} margin={{ top: 30, right: 10, left: -25, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
                         <Tooltip cursor={{ fill: 'rgba(0,0,0,0.02)' }} content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '25px', fontSize: '11px', fontWeight: '800' }} />
-                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[6, 6, 0, 0]} barSize={16}>
-                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '30px', fontSize: '10px', fontWeight: '800' }} />
+                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={14}>
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
                         </Bar>
-                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[6, 6, 0, 0]} barSize={16}>
-                          <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
+                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={14}>
+                          <LabelList position="top" fontSize={10} fontWeight="900" fill={isDark ? '#f8fafc' : '#1e293b'} offset={8} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -419,10 +474,11 @@ export default function App() {
 
             <Card title="Execution Matrix">
               <div className="overflow-x-auto no-scrollbar custom-scrollbar">
-                <table className="w-full text-left min-w-[900px]">
+                <table className="w-full text-left min-w-[1000px]">
                   <thead className="bg-slate-50 dark:bg-slate-800/50">
                     <tr>
                       <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-left">Build Version</th>
+                      <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-center">Overall Status</th>
                       <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Total Test Cases</th>
                       <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Passed Cases</th>
                       <th className="px-6 py-4 text-[11px] font-black uppercase text-slate-400 tracking-wider text-right">Failed Cases</th>
@@ -433,31 +489,40 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredRows.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
-                        <td className="px-6 py-5">
-                          <div className="text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">
-                            {row['RC Build'] || row['Build']}
-                          </div>
-                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-tight">
-                            {row.Platform} • {row['Build Date']}
-                          </div>
-                        </td>
-                        <td className="px-6 py-5 text-xs font-black text-slate-500 text-right">{row['Total Test Cases'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-emerald-600 text-right">{row['Passed'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-slate-400 text-right">{row['Not considered'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-violet-500 text-right">{row['Automation'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-pink-500 text-right">{row['Manual'] || 0}</td>
-                        <td className="px-6 py-5">
-                          <div className="flex gap-1.5 justify-end">
-                            <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" />
-                            <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" />
-                            <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" />
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredRows.map((row, idx) => {
+                      const statusKey = BUILD_STATUS_COL_ALIASES.find(a => row[a] !== undefined) || 'Status';
+                      const statusValue = row[statusKey] || 'N/A';
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
+                          <td className="px-6 py-5">
+                            <div className="text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors">
+                              {row['RC Build'] || row['Build']}
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-tight">
+                              {row.Platform} • {row['Build Date']}
+                            </div>
+                          </td>
+                          <td className="px-6 py-5 text-center">
+                            <span className={`inline-block px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider text-white shadow-sm transition-colors ${getStatusColor(statusValue)}`}>
+                              {statusValue}
+                            </span>
+                          </td>
+                          <td className="px-6 py-5 text-xs font-black text-slate-500 text-right">{row['Total Test Cases'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-emerald-600 text-right">{row['Passed'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-slate-400 text-right">{row['Not considered'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-violet-500 text-right">{row['Automation'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-pink-500 text-right">{row['Manual'] || 0}</td>
+                          <td className="px-6 py-5">
+                            <div className="flex gap-1.5 justify-end">
+                              <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" />
+                              <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" />
+                              <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -470,7 +535,7 @@ export default function App() {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{filteredRows.map((row, i) => (
                 <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
                   {dataMap[activeTab]?.headers.map((h, j) => (
-                    <td key={j} className="px-6 py-5">{h.toLowerCase().includes('status') ? <span className="text-[10px] font-black uppercase px-3 py-1.5 rounded-xl bg-emerald-500 text-white shadow-sm">{row[h] || 'PENDING'}</span> : <div className="text-[12px] font-bold text-slate-600 dark:text-slate-300 leading-relaxed">{row[h] || '-'}</div>}</td>
+                    <td key={j} className="px-6 py-5">{h.toLowerCase().includes('status') ? <span className={`text-[10px] font-black uppercase px-3 py-1.5 rounded-xl text-white shadow-sm ${getStatusColor(row[h] || 'Pending')}`}>{row[h] || 'PENDING'}</span> : <div className="text-[12px] font-bold text-slate-600 dark:text-slate-300 leading-relaxed">{row[h] || '-'}</div>}</td>
                   ))}
                 </tr>
               ))}</tbody>
@@ -487,7 +552,7 @@ function MetricCard({ title, value, icon }: MetricCardProps) {
     <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm relative group hover:-translate-y-1 transition-all duration-300">
       <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-20 transition-all rotate-12 text-6xl pointer-events-none">{icon}</div>
       <span className="text-[11px] font-black text-slate-400 uppercase mb-2 block tracking-widest">{title}</span>
-      <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{value}</div>
+      <div className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white tracking-tight">{value}</div>
     </div>
   );
 }
