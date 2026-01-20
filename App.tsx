@@ -130,10 +130,12 @@ const CustomTooltip = ({ active, payload, label }: any) => {
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2.5 border-b border-slate-50 dark:border-slate-800 pb-2.5 truncate max-w-[200px]">{title}</p>
       <div className="space-y-2">
         {payload.map((entry: any, index: number) => {
-          // Re-calculate percentage accurately for the tooltip if it's not already provided
-          const totalValue = payload.reduce((acc: number, curr: any) => acc + (Number(curr.value) || 0), 0);
-          const percent = entry.payload?.percent !== undefined ? entry.payload.percent : (totalValue > 0 ? entry.value / totalValue : 0);
-          const hasPercent = percent !== undefined && !isNaN(percent);
+          const preCalcPercent = entry.payload?.percent;
+          let percentDisplay = null;
+
+          if (preCalcPercent !== undefined && !isNaN(preCalcPercent)) {
+             percentDisplay = (preCalcPercent * 100).toFixed(1);
+          }
           
           return (
             <div key={index} className="flex items-center justify-between gap-6">
@@ -143,9 +145,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
               </div>
               <div className="flex items-center gap-1.5 text-right">
                 <span className="text-[11px] font-extrabold text-slate-900 dark:text-white">{entry.value}</span>
-                {hasPercent && (
+                {percentDisplay && (
                   <span className="text-[10px] font-black text-primary-600 dark:text-primary-400">
-                    ({(percent * 100).toFixed(1)}%)
+                    ({percentDisplay}%)
                   </span>
                 )}
               </div>
@@ -259,7 +261,7 @@ function DateSelector({ value, onChange, placeholder }: { value: string, onChang
         </svg>
       </div>
       {isOpen && (
-        <div className="absolute top-full left-0 mt-2 z-[100] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl glass animate-in zoom-in-95 duration-200">
+        <div className="absolute top-full left-0 mt-2 z-[60] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl glass animate-in zoom-in-95 duration-200">
           <Calendar selectedDate={value} onSelect={onChange} onClose={() => setIsOpen(false)} />
         </div>
       )}
@@ -403,7 +405,7 @@ export default function App() {
 
   const platforms = useMemo(() => {
     const all = new Set<string>();
-    Object.values(dataMap).forEach(d => {
+    Object.values(dataMap).forEach((d: DashboardData) => {
       const col = PLATFORM_COL_ALIASES.find(a => d.headers.includes(a));
       if (col) d.rows.forEach(r => r[col] && all.add(String(r[col]).trim()));
     });
@@ -687,7 +689,8 @@ export default function App() {
    */
   const renderCustomizedPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, value, name }: any) => {
     const RADIAN = Math.PI / 180;
-    const radius = outerRadius + 40; 
+    // Increased radius to push labels out further to prevent overlap
+    const radius = outerRadius + 50; 
     const x = cx + radius * Math.cos(-midAngle * RADIAN);
     const y = cy + radius * Math.sin(-midAngle * RADIAN);
     const labelPercent = (percent * 100).toFixed(1);
@@ -698,17 +701,17 @@ export default function App() {
       <g>
         <text 
           x={x} 
-          y={y - 10} 
+          y={y - 8} 
           fill={isDark ? '#94a3b8' : '#64748b'} 
           textAnchor={x > cx ? 'start' : 'end'} 
           dominantBaseline="central" 
-          className="text-[10px] md:text-[11px] font-black uppercase tracking-widest"
+          className="text-[11px] md:text-[12px] font-black uppercase tracking-widest"
         >
           {name}
         </text>
         <text 
           x={x} 
-          y={y + 10} 
+          y={y + 8} 
           fill={isDark ? '#f8fafc' : '#0f172a'} 
           textAnchor={x > cx ? 'start' : 'end'} 
           dominantBaseline="central" 
@@ -726,10 +729,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#020617] pb-12 transition-all">
-      <div className="fixed top-0 left-0 right-0 h-1 bg-slate-100 dark:bg-slate-900 z-[60] overflow-hidden">
+      <div className="fixed top-0 left-0 right-0 h-1 bg-slate-100 dark:bg-slate-900 z-[100] overflow-hidden">
         <div className="h-full bg-primary-600 transition-all duration-1000 ease-linear" style={{ width: `${refreshProgress}%` }} />
       </div>
-      <nav className="sticky top-0 z-50 glass border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 py-4 shadow-sm">
+      <nav className="sticky top-0 z-[90] glass border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 py-4 shadow-sm">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg shrink-0">i</div>
@@ -744,7 +747,7 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 md:px-8 py-8 space-y-8">
         {/* Filter Section */}
-        <section className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm relative z-[60]">
+        <section className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm relative">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Dashboard Filters</h2>
             {isAnyFilterActive && (
@@ -863,7 +866,7 @@ export default function App() {
                   <div className="h-[300px]"><ResponsiveContainer width="100%" height="100%">
                     <BarChart data={trendData} margin={{ top: 40, right: 10, left: -20, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} interval={0} />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
                       <Tooltip content={<CustomTooltip />} />
                       <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold' }} />
@@ -884,13 +887,13 @@ export default function App() {
                   <div className="flex flex-col items-center justify-center text-center p-12 space-y-3 animate-in fade-in zoom-in-95 duration-500">
                     <div className="text-5xl opacity-30 grayscale mb-2">🎉</div>
                     <h4 className="text-base font-black text-slate-900 dark:text-white uppercase tracking-tight">Perfect Score!</h4>
-                    <p className="text-sm font-bold text-slate-400 max-w-sm">No issues reported in this build context. All quality metrics are within target limits.</p>
+                    <p className="text-sm font-bold text-slate-400 max-w-sm">No issues reported in this build.</p>
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={trendData} margin={{ top: 40, right: 20, left: -20, bottom: 10 }} stackOffset="none">
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} interval={0} />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
                       <Tooltip content={<CustomTooltip />} />
                       <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', paddingBottom: '30px' }} />
@@ -911,17 +914,17 @@ export default function App() {
             <Card title="Execution Matrix & Build Details" fullWidth>
               <div className="max-h-[600px] overflow-auto custom-scrollbar border border-slate-100 dark:border-slate-800 rounded-2xl shadow-inner bg-white dark:bg-slate-900 relative">
                 <table className="w-full text-left min-w-[1400px] border-separate border-spacing-0">
-                  <thead className="sticky top-0 z-40 bg-slate-50 dark:bg-slate-900 shadow-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-900 shadow-sm">
                     <tr className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky left-0 z-50 min-w-[200px]">Build</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">Platform</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">Start Date</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-center">Status</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">Build Type</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Total Cases</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Passed</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Failed</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Severities</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky left-0 top-0 z-50 min-w-[200px]">Build</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky top-0 z-40">Platform</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky top-0 z-40">Start Date</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-center sticky top-0 z-40">Status</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky top-0 z-40">Build Type</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right sticky top-0 z-40">Total Cases</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right sticky top-0 z-40">Passed</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right sticky top-0 z-40">Failed</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right sticky top-0 z-40">Severities</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -950,9 +953,9 @@ export default function App() {
                           <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
                           <td className="px-6 py-5 text-right">
                             <div className="flex gap-1 justify-end">
-                              <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" details={buildDetails?.critical} />
-                              <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" details={buildDetails?.major} />
-                              <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" details={buildDetails?.minor} />
+                              <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" />
+                              <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" />
+                              <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" />
                             </div>
                           </td>
                         </tr>
@@ -970,9 +973,9 @@ export default function App() {
           <Card title={activeTab === 'new_issues' ? 'Issue Backlog (External Data)' : 'Validation Queue'} loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)} discoveredTabs={discoveredTabs} fullWidth>
             <div className="max-h-[600px] overflow-auto custom-scrollbar border border-slate-100 dark:border-slate-800 rounded-2xl shadow-inner bg-white dark:bg-slate-900 relative">
               <table className="w-full text-left min-w-[1000px] border-separate border-spacing-0">
-                <thead className="sticky top-0 z-40 bg-slate-50 dark:bg-slate-900 shadow-sm">
+                <thead className="bg-slate-50 dark:bg-slate-900 shadow-sm">
                   <tr className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
-                    {displayHeaders.map((h, i) => <th key={i} className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap bg-slate-50 dark:bg-slate-900">{h}</th>)}
+                    {displayHeaders.map((h, i) => <th key={i} className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap bg-slate-50 dark:bg-slate-900 sticky top-0 z-40">{h}</th>)}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1047,28 +1050,28 @@ function Badge({ value, color, label, size = 'md', details }: BadgeProps) {
   const s = size === 'sm' ? 'w-8 h-8 text-[10px]' : 'w-10 h-10 text-[12px]';
   const hasDetails = details && details.length > 0;
   
-  // Do not show tooltip if count is 0
+  // Show tooltip if not zero
   const canShowTooltip = !isZero;
 
   return (
     <div className="relative group/badge inline-block">
-      <div className={`${s} rounded-lg flex items-center justify-center font-black transition-all ${isZero ? 'bg-slate-100 text-slate-300 dark:bg-slate-800 dark:text-slate-700' : `${color} text-white shadow-sm cursor-help hover:scale-105 active:scale-95`}`}>
+      <div className={`${s} rounded-lg flex items-center justify-center font-black transition-all ${isZero ? 'bg-slate-100 text-slate-300 dark:bg-slate-800 dark:text-slate-700' : `${color} text-white shadow-sm ${canShowTooltip ? 'cursor-help' : ''} hover:scale-105 active:scale-95`}`}>
         {displayVal}
       </div>
       
       {canShowTooltip && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 p-3 bg-slate-900/95 backdrop-blur text-white rounded-xl opacity-0 scale-95 translate-y-2 group-hover/badge:opacity-100 group-hover/badge:scale-100 group-hover/badge:translate-y-0 pointer-events-none transition-all duration-200 ease-out z-[100] shadow-2xl border border-white/10 min-w-[200px] max-w-[340px]">
-          <div className="flex items-center justify-between gap-4 mb-2 border-b border-white/10 pb-2">
+        <div className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-3 p-3 bg-slate-900/95 backdrop-blur text-white rounded-xl opacity-0 scale-95 translate-y-2 group-hover/badge:opacity-100 group-hover/badge:scale-100 group-hover/badge:translate-y-0 pointer-events-none transition-all duration-200 ease-out z-[100] shadow-2xl border border-white/10 ${hasDetails ? 'min-w-[200px] max-w-[340px]' : 'whitespace-nowrap'}`}>
+          <div className={`flex items-center ${hasDetails ? 'justify-between mb-2 border-b border-white/10 pb-2' : 'justify-center'}`}>
              <span className="text-[11px] font-black uppercase tracking-wider">{displayVal} {label} {vNum === 1 ? 'Issue' : 'Issues'}</span>
           </div>
-          {hasDetails ? (
+          {hasDetails && (
             <ul className="space-y-1.5 max-h-[160px] overflow-y-auto no-scrollbar pr-1 text-left">
               {details.slice(0, 10).map((d, i) => (
                 <li key={i} className="text-[10px] font-medium leading-tight text-slate-200 list-disc list-inside break-words">{d}</li>
               ))}
               {details.length > 10 && <li className="text-[9px] font-black text-primary-400 uppercase tracking-tighter pt-1 sticky bottom-0 bg-slate-900/95">+ {details.length - 10} more issues</li>}
             </ul>
-          ) : <p className="text-[10px] italic text-slate-400 font-medium">No matching detail records found</p>}
+          )}
           <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-slate-900/95" />
         </div>
       )}
