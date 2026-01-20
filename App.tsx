@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
@@ -13,13 +12,25 @@ const BASE_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?o
 const HTML_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pubhtml`;
 const REFRESH_INTERVAL = 120000;
 
-const pageDisplayName = 'Ifocus RC Build Reports';
+const defaultPageTitle = 'Ifocus RC Build Reports';
 
-// Tabs configuration with fallback labels for GID discovery
+// Tabs configuration
 const TABS_CONFIG = {
   SUMMARY: { id: 'summary', label: 'Report Summary', gid: '0', icon: '📊' },
-  NEW_ISSUES: { id: 'new_issues', label: 'New Issues', gid: '1410887303', icon: '🐛' },
-  VALIDATION: { id: 'validation', label: 'Ticket Validation', gid: '1853472064', icon: '✅' },
+  NEW_ISSUES: { 
+    id: 'new_issues', 
+    label: 'New Issues', 
+    gid: '476295067', 
+    icon: '🐛',
+    overrideUrl: 'https://docs.google.com/spreadsheets/d/1yjf5kI6WPNwi_WhH3dFTgiIUONztM54I50sJtnr_PxY/export?format=csv&gid=476295067'
+  },
+  VALIDATION: { 
+    id: 'validation', 
+    label: 'Ticket Validation', 
+    gid: '2057375142', 
+    icon: '✅',
+    overrideUrl: 'https://docs.google.com/spreadsheets/d/1yjf5kI6WPNwi_WhH3dFTgiIUONztM54I50sJtnr_PxY/export?format=csv&gid=2057375142'
+  },
 };
 
 const EXECUTION_COLORS = {
@@ -33,12 +44,56 @@ const EXECUTION_COLORS = {
   minor: '#3B82F6',
 };
 
-const BUILD_COL_ALIASES = ['RC Build', 'Build Version', 'Build', 'Version', 'Build Number'];
-const PLATFORM_COL_ALIASES = ['Platform', 'OS', 'Environment'];
-const DATE_COL_ALIASES = ['Build Date', 'Date', 'Reported Date', 'Created At'];
-const SEVERITY_COL_ALIASES = ['Severity', 'Issue Severity', 'Priority'];
+const BUILD_COL_ALIASES = ['RC Build', 'Build Version', 'Build', 'Version', 'Build Number', 'Release Build', 'Build details'];
+const PLATFORM_COL_ALIASES = ['Platform', 'OS', 'Environment', 'Device'];
+const DATE_COL_ALIASES = ['Build Date', 'Date', 'Reported Date', 'Created At', 'Start Date'];
+const SEVERITY_COL_ALIASES = ['Severity', 'Issue Severity', 'Priority', 'Status Severity'];
+const STATUS_COL_ALIASES = ['Status', 'Overall Status', 'Result', 'Results', 'Execution Status', 'Build Status'];
+const TYPE_COL_ALIASES = ['Build Type', 'Type', 'Deployment Type', 'Category'];
 const AUTO_COL_ALIASES = ['Automation executed', 'Automation', 'Auto Executed', 'Automation Test Cases'];
 const MANUAL_COL_ALIASES = ['Manual executed', 'Manual', 'Manual Executed', 'Manual Test Cases'];
+const TITLE_COL_ALIASES = ['Summary', 'Title', 'Issue', 'Description', 'Subject', 'Feature'];
+const RELEASE_STORE_ALIASES = ['Released to store', 'Store Released', 'Store Status', 'App Store Status', 'Play Store Status'];
+
+// --- HELPERS ---
+
+const normalize = (s: string) => String(s || '').toLowerCase().replace(/\s/g, '');
+
+/**
+ * Reusable helper to determine status styles based on semantic value
+ */
+const getStatusStyles = (value: any) => {
+  const s = String(value || '').toLowerCase();
+  
+  if (s.includes('not implemented') || s.includes('not fixed') || s.includes('fail') || s.includes('error')) {
+    return 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400';
+  }
+  if (s.includes('implemented') || s.includes('fixed') || s.includes('pass') || s.includes('success') || s.includes('completed')) {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400';
+  }
+  if (s.includes('in progress') || s.includes('pending') || s.includes('started')) {
+    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+  }
+  if (s.includes('cnv')) {
+    return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400';
+  }
+  if (s.includes('not considered')) {
+    return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400';
+  }
+  return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
+};
+
+/**
+ * Helper to determine Build Type colors
+ */
+const getBuildTypeStyles = (type: any) => {
+  const t = String(type || '').toLowerCase();
+  if (t.includes('hotfix')) return 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400';
+  if (t.includes('planned')) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400';
+  if (t.includes('adhoc') || t.includes('ad-hoc')) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+  if (t.includes('release')) return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
+  return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400';
+};
 
 // --- INTERFACES ---
 interface MetricCardProps {
@@ -62,6 +117,7 @@ interface BadgeProps {
   color: string;
   label: string;
   size?: 'sm' | 'md';
+  details?: string[];
 }
 
 // --- SUB-COMPONENTS ---
@@ -70,23 +126,25 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
   const title = label || payload[0].name;
   return (
-    <div className="bg-white/98 dark:bg-slate-900/98 backdrop-blur-md p-3 border border-slate-200 dark:border-slate-800 shadow-2xl rounded-xl animate-in fade-in duration-150 min-w-[140px] pointer-events-none z-[200]">
-      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5 border-b border-slate-50 dark:border-slate-800 pb-1.5 truncate max-w-[180px]">{title}</p>
-      <div className="space-y-1.5">
+    <div className="bg-white/98 dark:bg-slate-900/98 backdrop-blur-md p-4 border border-slate-200 dark:border-slate-800 shadow-2xl rounded-2xl animate-in fade-in duration-150 min-w-[160px] pointer-events-none z-[200]">
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2.5 border-b border-slate-50 dark:border-slate-800 pb-2.5 truncate max-w-[200px]">{title}</p>
+      <div className="space-y-2">
         {payload.map((entry: any, index: number) => {
-          const percent = entry.payload?.percent !== undefined ? entry.payload.percent : entry.percent;
+          // Re-calculate percentage accurately for the tooltip if it's not already provided
+          const totalValue = payload.reduce((acc: number, curr: any) => acc + (Number(curr.value) || 0), 0);
+          const percent = entry.payload?.percent !== undefined ? entry.payload.percent : (totalValue > 0 ? entry.value / totalValue : 0);
           const hasPercent = percent !== undefined && !isNaN(percent);
-
+          
           return (
-            <div key={index} className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color || entry.fill }} />
-                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">{entry.name}</span>
+            <div key={index} className="flex items-center justify-between gap-6">
+              <div className="flex items-center gap-2.5">
+                <div className="w-2.5 h-2.5 rounded-full ring-2 ring-white dark:ring-slate-800 shadow-sm" style={{ backgroundColor: entry.color || entry.fill }} />
+                <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">{entry.name}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] font-black text-slate-900 dark:text-white">{entry.value}</span>
+              <div className="flex items-center gap-1.5 text-right">
+                <span className="text-[11px] font-extrabold text-slate-900 dark:text-white">{entry.value}</span>
                 {hasPercent && (
-                  <span className="text-[9px] font-black text-primary-500">
+                  <span className="text-[10px] font-black text-primary-600 dark:text-primary-400">
                     ({(percent * 100).toFixed(1)}%)
                   </span>
                 )}
@@ -99,57 +157,113 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+function Calendar({ selectedDate, onSelect, onClose }: { selectedDate: string, onSelect: (date: string) => void, onClose: () => void }) {
+  const [viewDate, setViewDate] = useState(() => selectedDate ? new Date(selectedDate) : new Date());
+  const month = viewDate.getMonth();
+  const year = viewDate.getFullYear();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const prevMonth = () => setViewDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setViewDate(new Date(year, month + 1, 1));
+  const isSelected = (d: number) => {
+    if (!selectedDate) return false;
+    const s = new Date(selectedDate);
+    return s.getDate() === d && s.getMonth() === month && s.getFullYear() === year;
+  };
+  const isToday = (d: number) => {
+    const today = new Date();
+    return today.getDate() === d && today.getMonth() === month && today.getFullYear() === year;
+  };
+  const handleDateClick = (d: number) => {
+    const date = new Date(year, month, d);
+    const offset = date.getTimezoneOffset();
+    const adjusted = new Date(date.getTime() - (offset * 60 * 1000));
+    onSelect(adjusted.toISOString().split('T')[0]);
+    onClose();
+  };
+  return (
+    <div className="p-4 w-72 select-none">
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={prevMonth} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors text-slate-400 hover:text-primary-600">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
+        </button>
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
+          {monthNames[month]} {year}
+        </div>
+        <button onClick={nextMonth} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors text-slate-400 hover:text-primary-600">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 mb-2">
+        {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(d => (
+          <div key={d} className="text-center text-[9px] font-black text-slate-400 uppercase">{d}</div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`} />)}
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const d = i + 1;
+          const active = isSelected(d);
+          const current = isToday(d);
+          return (
+            <button
+              key={d}
+              onClick={() => handleDateClick(d)}
+              className={`
+                aspect-square rounded-lg text-[10px] font-bold flex items-center justify-center transition-all
+                ${active ? 'bg-primary-600 text-white shadow-lg shadow-primary-500/30' : 
+                  current ? 'text-primary-600 bg-primary-50 dark:bg-primary-900/20' : 
+                  'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}
+              `}
+            >
+              {d}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function DateSelector({ value, onChange, placeholder }: { value: string, onChange: (v: string) => void, placeholder: string }) {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
   
   const formatDate = (val: string) => {
     if (!val) return placeholder;
     return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  const handleOpenPicker = () => {
-    const el = inputRef.current;
-    if (el) {
-      try {
-        if ('showPicker' in el) {
-          (el as any).showPicker();
-        } else {
-          // Fix: cast to any to resolve the 'never' type inference issue in the else block
-          (el as any).focus();
-          (el as any).click();
-        }
-      } catch (e) {
-        // Fix: cast to any to resolve potential 'never' type issues in the catch block
-        (el as any).focus();
-        (el as any).click();
-      }
-    }
-  };
-
   return (
-    <div className="relative flex-1 min-w-0 h-11">
+    <div className="relative flex-1 min-w-0 h-11" ref={containerRef}>
       <div 
-        onClick={handleOpenPicker}
-        className="w-full h-full bg-slate-50 dark:bg-slate-800 px-4 rounded-2xl border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-all flex items-center justify-between cursor-pointer group z-0"
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full h-full bg-slate-50 dark:bg-slate-800 px-4 rounded-2xl border transition-all flex items-center justify-between cursor-pointer group z-0 ${isOpen ? 'border-primary-500 ring-2 ring-primary-500/10' : 'border-transparent hover:border-slate-200 dark:hover:border-slate-700'}`}
       >
         <span className={`text-xs font-bold truncate mr-2 ${value ? 'text-slate-900 dark:text-white' : 'text-slate-400'}`}>
           {formatDate(value)}
         </span>
-        <svg className="w-4 h-4 text-slate-300 group-hover:text-primary-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className={`w-4 h-4 transition-colors ${isOpen ? 'text-primary-500' : 'text-slate-300 group-hover:text-primary-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2v12a2 2 0 002 2z" />
         </svg>
       </div>
-      
-      <input 
-        ref={inputRef}
-        type="date" 
-        value={value} 
-        onChange={(e) => onChange(e.target.value)} 
-        className="absolute inset-0 w-full h-full opacity-0 pointer-events-none z-10"
-        aria-label={placeholder}
-      />
-
-      {value && (
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-2 z-[100] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl glass animate-in zoom-in-95 duration-200">
+          <Calendar selectedDate={value} onSelect={onChange} onClose={() => setIsOpen(false)} />
+        </div>
+      )}
+      {value && !isOpen && (
         <button 
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(''); }} 
           className="absolute right-10 top-1/2 -translate-y-1/2 p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-all z-20"
@@ -172,9 +286,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>(TABS_CONFIG.SUMMARY.id);
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
-  const [lastUpdatedMap, setLastUpdatedMap] = useState<Record<string, Date>>({});
   const [refreshProgress, setRefreshProgress] = useState(0);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [selectedPlatform, setSelectedPlatform] = useState<string>('All');
   const [selectedBuild, setSelectedBuild] = useState<string>('All');
@@ -191,15 +303,12 @@ export default function App() {
     document.documentElement.classList.toggle('dark', isDark);
   }, [theme, isDark]);
 
-  // Robust GID discovery to fix "Invalid GID" errors
   const discoverGids = useCallback(async () => {
     try {
       const resp = await fetch(`${HTML_URL}&t=${Date.now()}`);
       if (!resp.ok) return null;
       const html = await resp.text();
       const tabMap: Record<string, string> = {};
-      
-      // Look for standard sheet-button GIDs
       const liRegex = /id="sheet-button-([^"]+)">.*?>(.*?)<\/a>/g;
       let match;
       while ((match = liRegex.exec(html)) !== null) {
@@ -207,8 +316,6 @@ export default function App() {
         const name = match[2].trim();
         tabMap[name] = gid;
       }
-      
-      // Alternative fallback for GID discovery from scripts
       if (Object.keys(tabMap).length === 0) {
         const scriptRegex = /"([^"]+)",\d+,"([^"]+)",\d+,\d+,"[^"]*",\d+/g;
         while ((match = scriptRegex.exec(html)) !== null) {
@@ -222,7 +329,6 @@ export default function App() {
       setDiscoveredTabs(tabMap);
       return tabMap;
     } catch (e) {
-      console.error("GID Discovery Error:", e);
       return null;
     }
   }, []);
@@ -232,16 +338,19 @@ export default function App() {
       setLoadingMap(p => ({ ...p, [tabId]: true })); 
       setErrorMap(p => ({ ...p, [tabId]: null })); 
     }
-    const config = Object.values(TABS_CONFIG).find(t => t.id === tabId);
+    const config = (TABS_CONFIG as any)[tabId.toUpperCase()] || Object.values(TABS_CONFIG).find(t => t.id === tabId);
     if (!config) return;
-
-    const currentGid = dynamicGidMap[tabId] || config.gid;
-
+    let url: string;
+    if (config.overrideUrl) {
+      url = `${config.overrideUrl}&t=${Date.now()}`;
+    } else {
+      const currentGid = dynamicGidMap[tabId] || config.gid;
+      url = `${BASE_URL}&gid=${currentGid}&t=${Date.now()}`;
+    }
     try {
-      const resp = await fetch(`${BASE_URL}&gid=${currentGid}&t=${Date.now()}`);
-      
+      const resp = await fetch(url);
       if (!resp.ok) {
-        if ((resp.status === 400 || resp.status === 404) && retryDiscovery) {
+        if ((resp.status === 400 || resp.status === 404) && retryDiscovery && !config.overrideUrl) {
           const tabs = await discoverGids();
           if (tabs) {
             const labelLower = config.label.toLowerCase().replace(/\s/g, '');
@@ -249,7 +358,6 @@ export default function App() {
               const nameLower = name.toLowerCase().replace(/\s/g, '');
               return nameLower === labelLower || nameLower.includes(labelLower) || labelLower.includes(nameLower);
             });
-
             if (foundName) {
               const newGid = tabs[foundName];
               setDynamicGidMap(prev => ({ ...prev, [tabId]: newGid }));
@@ -257,13 +365,11 @@ export default function App() {
             }
           }
         }
-        throw new Error(`Invalid source configuration (GID: ${currentGid}). The tab '${config.label}' was not found in the published spreadsheet.`);
+        throw new Error(`Invalid source configuration. Tab '${config.label}' was not found.`);
       }
-
       const text = await resp.text();
       const parsed = parseCSV(text);
       setDataMap(p => ({ ...p, [tabId]: parsed }));
-      setLastUpdatedMap(p => ({ ...p, [tabId]: new Date() }));
     } catch (e: any) {
       if (!silent) setErrorMap(p => ({ ...p, [tabId]: e.message }));
     } finally { 
@@ -272,11 +378,16 @@ export default function App() {
   }, [dynamicGidMap, discoverGids]);
 
   const syncAll = useCallback(async (isAuto = false) => {
-    if (isAuto) setIsSyncing(true);
     await Promise.all(Object.values(TABS_CONFIG).map(t => fetchData(t.id, isAuto)));
-    if (isAuto) setIsSyncing(false);
     setRefreshProgress(0);
   }, [fetchData]);
+
+  const handleResetFilters = useCallback(() => {
+    setSelectedPlatform('All');
+    setSelectedBuild('All');
+    setStartDate('');
+    setEndDate('');
+  }, []);
 
   useEffect(() => { syncAll(); }, []);
 
@@ -294,31 +405,111 @@ export default function App() {
     const all = new Set<string>();
     Object.values(dataMap).forEach(d => {
       const col = PLATFORM_COL_ALIASES.find(a => d.headers.includes(a));
-      if (col) d.rows.forEach(r => r[col] && all.add(String(r[col])));
+      if (col) d.rows.forEach(r => r[col] && all.add(String(r[col]).trim()));
     });
     return Array.from(all).sort();
   }, [dataMap]);
 
+  /**
+   * Refined builds useMemo for dynamic filtering based on Platform
+   */
   const builds = useMemo(() => {
     const all = new Set<string>();
-    Object.values(dataMap).forEach(d => {
-      const pCol = PLATFORM_COL_ALIASES.find(a => d.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => d.headers.includes(a));
-      if (bCol) d.rows.forEach(r => {
-        if (selectedPlatform === 'All' || (pCol && String(r[pCol]) === selectedPlatform)) {
-          all.add(String(r[bCol] || '').trim());
-        }
-      });
-    });
+    const summaryData = dataMap[TABS_CONFIG.SUMMARY.id];
+    if (summaryData) {
+      const pCol = PLATFORM_COL_ALIASES.find(a => summaryData.headers.includes(a));
+      const bCol = BUILD_COL_ALIASES.find(a => summaryData.headers.includes(a));
+      if (bCol) {
+        summaryData.rows.forEach(r => {
+          const pVal = pCol ? String(r[pCol] || '').trim() : '';
+          const bVal = String(r[bCol] || '').trim();
+          if (bVal && (selectedPlatform === 'All' || pVal === selectedPlatform)) {
+            all.add(bVal);
+          }
+        });
+      }
+    }
     return Array.from(all).filter(Boolean).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   }, [dataMap, selectedPlatform]);
+
+  /**
+   * Selection Sync and Current Status Data Extraction
+   */
+  const currentBuildInfo = useMemo(() => {
+    if (selectedBuild === 'All') return null;
+    const summaryData = dataMap[TABS_CONFIG.SUMMARY.id];
+    if (!summaryData) return null;
+
+    const bCol = BUILD_COL_ALIASES.find(a => summaryData.headers.includes(a));
+    const pCol = PLATFORM_COL_ALIASES.find(a => summaryData.headers.includes(a));
+    const tCol = TYPE_COL_ALIASES.find(a => summaryData.headers.includes(a));
+    const dCol = DATE_COL_ALIASES.find(a => summaryData.headers.includes(a));
+    const sCol = STATUS_COL_ALIASES.find(a => summaryData.headers.includes(a));
+    const rCol = RELEASE_STORE_ALIASES.find(a => summaryData.headers.includes(a));
+
+    if (!bCol) return null;
+
+    const matchedRow = summaryData.rows.find(r => 
+      String(r[bCol]).trim() === selectedBuild &&
+      (selectedPlatform === 'All' || (pCol && String(r[pCol]).trim() === selectedPlatform))
+    );
+
+    return matchedRow ? {
+      build: selectedBuild,
+      platform: pCol ? matchedRow[pCol] : selectedPlatform,
+      type: tCol ? matchedRow[tCol] : null,
+      startDate: dCol ? matchedRow[dCol] : null,
+      status: sCol ? matchedRow[sCol] : null,
+      releasedToStore: rCol ? matchedRow[rCol] : null,
+    } : null;
+  }, [selectedBuild, selectedPlatform, dataMap]);
+
+  /**
+   * Dynamic Page Title Logic
+   */
+  const dynamicPageTitle = useMemo(() => {
+    if (selectedBuild !== 'All') {
+      return `Ifocus RC build report for ${selectedPlatform} - ${selectedBuild}`;
+    }
+    return defaultPageTitle;
+  }, [selectedPlatform, selectedBuild]);
+
+  const handleBuildChange = (newBuild: string) => {
+    setSelectedBuild(newBuild);
+    if (newBuild !== 'All' && selectedPlatform === 'All') {
+      const summaryData = dataMap[TABS_CONFIG.SUMMARY.id];
+      if (summaryData) {
+        const bCol = BUILD_COL_ALIASES.find(a => summaryData.headers.includes(a));
+        const pCol = PLATFORM_COL_ALIASES.find(a => summaryData.headers.includes(a));
+        if (bCol && pCol) {
+          const row = summaryData.rows.find(r => String(r[bCol]).trim() === newBuild);
+          if (row && row[pCol]) {
+            setSelectedPlatform(String(row[pCol]).trim());
+          }
+        }
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (selectedPlatform === 'All') {
+      if (selectedBuild !== 'All' && !builds.includes(selectedBuild)) {
+        setSelectedBuild('All');
+      }
+    } else {
+      if (selectedBuild !== 'All' && !builds.includes(selectedBuild)) {
+        setSelectedBuild('All');
+      }
+    }
+  }, [selectedPlatform, builds, selectedBuild]);
 
   const filteredRows = useMemo(() => {
     const data = dataMap[activeTab];
     if (!data) return [];
     let rows = [...data.rows];
     const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => data.headers.includes(a));
-    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]) === selectedPlatform);
-    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]) === selectedBuild);
+    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]).trim() === selectedPlatform);
+    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]).trim() === selectedBuild);
     if (startDate || endDate) rows = rows.filter(r => {
       if (!r[dCol || '']) return false;
       const bd = new Date(r[dCol || '']);
@@ -327,25 +518,68 @@ export default function App() {
     return rows;
   }, [dataMap, activeTab, selectedPlatform, selectedBuild, startDate, endDate]);
 
+  const displayHeaders = useMemo(() => {
+    const data = dataMap[activeTab];
+    if (!data) return [];
+    if (activeTab === TABS_CONFIG.VALIDATION.id) {
+      return data.headers.filter(h => !PLATFORM_COL_ALIASES.includes(h) && !BUILD_COL_ALIASES.includes(h));
+    }
+    return data.headers;
+  }, [dataMap, activeTab]);
+
+  const issueDetailsMap = useMemo(() => {
+    const issuesData = dataMap[TABS_CONFIG.NEW_ISSUES.id];
+    if (!issuesData) return {};
+    const bCol = BUILD_COL_ALIASES.find(a => issuesData.headers.includes(a));
+    const sCol = SEVERITY_COL_ALIASES.find(a => issuesData.headers.includes(a));
+    const tCol = TITLE_COL_ALIASES.find(a => issuesData.headers.includes(a));
+    const pCol = PLATFORM_COL_ALIASES.find(a => issuesData.headers.includes(a));
+    
+    if (!bCol || !sCol) return {};
+    const map: Record<string, Record<string, string[]>> = {};
+    issuesData.rows.forEach(r => {
+      const build = normalize(String(r[bCol] || ''));
+      const platform = pCol ? normalize(String(r[pCol] || '')) : 'any';
+      const sevRaw = String(r[sCol] || '').toLowerCase();
+      const title = String(tCol ? r[tCol] : '').trim();
+      
+      let sev = 'minor';
+      if (sevRaw.includes('crit')) sev = 'critical';
+      else if (sevRaw.includes('maj')) sev = 'major';
+      
+      const compositeKey = `${build}_${platform}`;
+      if (!map[compositeKey]) map[compositeKey] = { critical: [], major: [], minor: [] };
+      if (!map[`${build}_any`]) map[`${build}_any`] = { critical: [], major: [], minor: [] };
+      
+      if (title) {
+        map[compositeKey][sev].push(title);
+        map[`${build}_any`][sev].push(title);
+      }
+    });
+    return map;
+  }, [dataMap]);
+
   const summaryStats = useMemo(() => {
     const data = dataMap[TABS_CONFIG.SUMMARY.id];
     if (!data) return null;
     let rows = [...data.rows];
     const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => data.headers.includes(a));
-    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]) === selectedPlatform);
-    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]) === selectedBuild);
+    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]).trim() === selectedPlatform);
+    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]).trim() === selectedBuild);
     if (startDate || endDate) rows = rows.filter(r => {
       if (!r[dCol || '']) return false;
       const bd = new Date(r[dCol || '']);
       return (!startDate || bd >= new Date(startDate)) && (!endDate || bd <= new Date(endDate));
     });
-
     return rows.reduce((acc, r) => ({
       total: acc.total + (Number(r['Total Test Cases']) || 0),
       executed: acc.executed + (Number(r.Executed) || 0),
       passed: acc.passed + (Number(r.Passed) || 0),
+      failed: acc.failed + (Number(r.Failed) || 0),
       critical: acc.critical + (Number(r['Critical Issues']) || 0),
-    }), { total: 0, executed: 0, passed: 0, critical: 0 });
+      major: acc.major + (Number(r['Major Issues']) || 0),
+      minor: acc.minor + (Number(r['Minor Issues']) || 0),
+    }), { total: 0, executed: 0, passed: 0, failed: 0, critical: 0, major: 0, minor: 0 });
   }, [dataMap, selectedPlatform, selectedBuild, startDate, endDate]);
 
   const pieData = useMemo(() => {
@@ -353,14 +587,13 @@ export default function App() {
     if (!data) return [];
     let rows = [...data.rows];
     const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => data.headers.includes(a));
-    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]) === selectedPlatform);
-    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]) === selectedBuild);
+    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]).trim() === selectedPlatform);
+    if (selectedBuild !== 'All' && bCol) rows = rows.filter(r => String(r[bCol]).trim() === selectedBuild);
     if (startDate || endDate) rows = rows.filter(r => {
       if (!r[dCol || '']) return false;
       const bd = new Date(r[dCol || '']);
       return (!startDate || bd >= new Date(startDate)) && (!endDate || bd <= new Date(endDate));
     });
-
     const totals = rows.reduce((acc, r) => ({
       passed: acc.passed + (Number(r.Passed) || 0),
       failed: acc.failed + (Number(r.Failed) || 0),
@@ -371,40 +604,73 @@ export default function App() {
       { name: 'Pass', value: totals.passed, color: EXECUTION_COLORS.pass, percent: sum ? totals.passed / sum : 0 },
       { name: 'Fail', value: totals.failed, color: EXECUTION_COLORS.fail, percent: sum ? totals.failed / sum : 0 },
       { name: 'N/A', value: totals.notConsidered, color: EXECUTION_COLORS.notConsidered, percent: sum ? totals.notConsidered / sum : 0 },
-    ];
+    ].filter(d => d.value > 0);
   }, [dataMap, selectedPlatform, selectedBuild, startDate, endDate]);
 
-  // Combined trend data for multiple charts
   const trendData = useMemo(() => {
-    const data = dataMap[TABS_CONFIG.SUMMARY.id];
-    if (!data) return [];
-    let rows = [...data.rows];
-    const pCol = PLATFORM_COL_ALIASES.find(a => data.headers.includes(a)), bCol = BUILD_COL_ALIASES.find(a => data.headers.includes(a)), dCol = DATE_COL_ALIASES.find(a => data.headers.includes(a));
-    if (selectedPlatform !== 'All' && pCol) rows = rows.filter(r => String(r[pCol]) === selectedPlatform);
-    if (startDate || endDate) rows = rows.filter(r => {
-      if (!r[dCol || '']) return false;
-      const bd = new Date(r[dCol || '']);
+    const summaryData = dataMap[TABS_CONFIG.SUMMARY.id];
+    const issuesData = dataMap[TABS_CONFIG.NEW_ISSUES.id];
+    if (!summaryData) return [];
+    let sumRows = [...summaryData.rows];
+    const pColSum = PLATFORM_COL_ALIASES.find(a => summaryData.headers.includes(a)), dColSum = DATE_COL_ALIASES.find(a => summaryData.headers.includes(a));
+    if (selectedPlatform !== 'All' && pColSum) sumRows = sumRows.filter(r => String(r[pColSum]).trim() === selectedPlatform);
+    if (startDate || endDate) sumRows = sumRows.filter(r => {
+      if (!r[dColSum || '']) return false;
+      const bd = new Date(r[dColSum || '']);
       return (!startDate || bd >= new Date(startDate)) && (!endDate || bd <= new Date(endDate));
     });
-
-    return rows.slice(0, 10).reverse().map(r => {
-      const rawName = String(r['RC Build'] || r['Build'] || r['Build Version'] || 'Unknown');
-      const shortName = rawName.split(' ').pop() || rawName;
+    const recentSumRows = sumRows.slice(0, 10).reverse();
+    return recentSumRows.map(r => {
+      const rawBuildName = String(r['RC Build'] || r['Build'] || r['Build Version'] || 'Unknown').trim();
+      const shortName = rawBuildName.split(' ').pop() || rawBuildName;
       const autoKey = AUTO_COL_ALIASES.find(a => r[a] !== undefined);
       const manualKey = MANUAL_COL_ALIASES.find(a => r[a] !== undefined);
+      let critical = 0, major = 0, minor = 0;
+      if (issuesData) {
+        const bColIss = BUILD_COL_ALIASES.find(a => issuesData.headers.includes(a));
+        const sColIss = SEVERITY_COL_ALIASES.find(a => issuesData.headers.includes(a));
+        if (bColIss && sColIss) {
+          issuesData.rows.forEach(ir => {
+            const iBuild = String(ir[bColIss] || '').trim();
+            if (iBuild === rawBuildName) {
+              const sev = String(ir[sColIss] || '').toLowerCase();
+              if (sev.includes('crit')) critical++;
+              else if (sev.includes('maj')) major++;
+              else if (sev.includes('min')) minor++;
+            }
+          });
+        }
+      }
+      if (critical === 0 && major === 0 && minor === 0) {
+        critical = Number(r['Critical Issues']) || 0;
+        major = Number(r['Major Issues']) || 0;
+        minor = Number(r['Minor Issues']) || 0;
+      }
       return {
         name: shortName,
-        fullName: rawName,
+        fullName: rawBuildName,
         Passed: Number(r.Passed) || 0,
         Failed: Number(r.Failed) || 0,
-        Critical: Number(r['Critical Issues']) || 0,
-        Major: Number(r['Major Issues']) || 0,
-        Minor: Number(r['Minor Issues']) || 0,
+        Critical: critical,
+        Major: major,
+        Minor: minor,
         Automation: autoKey ? Number(r[autoKey]) : 0,
         Manual: manualKey ? Number(r[manualKey]) : 0,
       };
     });
   }, [dataMap, selectedPlatform, startDate, endDate]);
+
+  /**
+   * Determine if any issues exist in the current filtered context for the trend chart
+   */
+  const trendHasNoIssues = useMemo(() => {
+    if (selectedBuild !== 'All') {
+      // If a specific build is selected, we only check that build's summary stats
+      return (summaryStats?.critical === 0 && summaryStats?.major === 0 && summaryStats?.minor === 0);
+    }
+    // Otherwise check if all points in the trend are zero
+    return trendData.length === 0 || trendData.every(d => (d.Critical + d.Major + d.Minor) === 0);
+  }, [trendData, summaryStats, selectedBuild]);
 
   const renderActiveShape = (props: any) => {
     const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill } = props;
@@ -416,19 +682,60 @@ export default function App() {
     );
   };
 
+  /**
+   * Refined Pie Label for external positioning and readability
+   */
+  const renderCustomizedPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, value, name }: any) => {
+    const RADIAN = Math.PI / 180;
+    const radius = outerRadius + 40; 
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    const labelPercent = (percent * 100).toFixed(1);
+    
+    if (percent < 0.01) return null;
+
+    return (
+      <g>
+        <text 
+          x={x} 
+          y={y - 10} 
+          fill={isDark ? '#94a3b8' : '#64748b'} 
+          textAnchor={x > cx ? 'start' : 'end'} 
+          dominantBaseline="central" 
+          className="text-[10px] md:text-[11px] font-black uppercase tracking-widest"
+        >
+          {name}
+        </text>
+        <text 
+          x={x} 
+          y={y + 10} 
+          fill={isDark ? '#f8fafc' : '#0f172a'} 
+          textAnchor={x > cx ? 'start' : 'end'} 
+          dominantBaseline="central" 
+          className="text-[12px] md:text-[14px] font-black"
+        >
+          {`${value} (${labelPercent}%)`}
+        </text>
+      </g>
+    );
+  };
+
+  const isAnyFilterActive = useMemo(() => {
+    return selectedPlatform !== 'All' || selectedBuild !== 'All' || startDate !== '' || endDate !== '';
+  }, [selectedPlatform, selectedBuild, startDate, endDate]);
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#020617] pb-12 transition-all">
       <div className="fixed top-0 left-0 right-0 h-1 bg-slate-100 dark:bg-slate-900 z-[60] overflow-hidden">
         <div className="h-full bg-primary-600 transition-all duration-1000 ease-linear" style={{ width: `${refreshProgress}%` }} />
       </div>
-
       <nav className="sticky top-0 z-50 glass border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 py-4 shadow-sm">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg">i</div>
-            <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 truncate">{pageDisplayName}</h1>
+            <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg shrink-0">i</div>
+            <h1 className="text-sm md:text-xl font-black uppercase tracking-tight text-primary-600 truncate">{dynamicPageTitle}</h1>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             <button onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:scale-105 transition-all">{isDark ? '☀️' : '🌙'}</button>
             <button onClick={() => syncAll()} className="px-5 py-2.5 bg-primary-600 text-white rounded-xl text-[10px] font-black uppercase active:scale-95 shadow-lg">Sync</button>
           </div>
@@ -436,13 +743,75 @@ export default function App() {
       </nav>
 
       <main className="max-w-7xl mx-auto px-4 md:px-8 py-8 space-y-8">
-        <section className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm relative">
+        {/* Filter Section */}
+        <section className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm relative z-[60]">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Dashboard Filters</h2>
+            {isAnyFilterActive && (
+              <button onClick={handleResetFilters} className="text-[10px] font-black uppercase text-rose-500 hover:text-rose-600 transition-all flex items-center gap-1.5 group animate-in fade-in slide-in-from-right-2 duration-300">
+                <span className="p-1.5 rounded-full bg-rose-50 dark:bg-rose-900/20 group-hover:bg-rose-100 dark:group-hover:bg-rose-900/40 transition-colors">
+                  <svg className="w-3.5 h-3.5 group-hover:rotate-[-45deg] transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                </span>
+                Clear All Filters
+              </button>
+            )}
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Platform</label><select value={selectedPlatform} onChange={e => setSelectedPlatform(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer">{platforms.map(p => <option key={p} value={p}>{p}</option>)}<option value="All">All Platforms</option></select></div>
-            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Build</label><select value={selectedBuild} onChange={e => setSelectedBuild(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border-none appearance-none cursor-pointer"><option value="All">All Builds</option>{builds.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Platform</label><select value={selectedPlatform} onChange={e => setSelectedPlatform(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border border-transparent focus:border-primary-500/30 transition-all appearance-none cursor-pointer"><option value="All">All Platforms</option>{platforms.map(p => <option key={p} value={p}>{p}</option>)}</select></div>
+            <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Build Version</label><select value={selectedBuild} onChange={e => handleBuildChange(e.target.value)} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 mt-1 rounded-2xl text-xs font-bold border border-transparent focus:border-primary-500/30 transition-all appearance-none cursor-pointer"><option value="All">All Builds</option>{builds.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
             <div className="md:col-span-2"><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Date Range</label><div className="flex items-center gap-2 mt-1"><DateSelector value={startDate} onChange={setStartDate} placeholder="Start Date" /><span className="text-slate-300">~</span><DateSelector value={endDate} onChange={setEndDate} placeholder="End Date" /></div></div>
           </div>
         </section>
+
+        {/* Current Status Section */}
+        {currentBuildInfo && (
+          <section className="animate-in fade-in slide-in-from-top-2 duration-500">
+            <div className="bg-white dark:bg-slate-900 rounded-[2rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
+                <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Current Status</h2>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8">
+                <div>
+                  <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Build Number</p>
+                  <p className="text-sm font-black text-primary-600 dark:text-primary-400">#{currentBuildInfo.build}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Platform</p>
+                  <p className="text-sm font-black text-slate-900 dark:text-white uppercase">{currentBuildInfo.platform}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Build Type</p>
+                  {currentBuildInfo.type ? (
+                    <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider ${getBuildTypeStyles(currentBuildInfo.type)}`}>
+                      {currentBuildInfo.type}
+                    </span>
+                  ) : <p className="text-sm font-black text-slate-300">—</p>}
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Start Date</p>
+                  <p className="text-sm font-black text-slate-900 dark:text-white">{currentBuildInfo.startDate || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Overall Status</p>
+                  {currentBuildInfo.status ? (
+                    <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider ${getStatusStyles(currentBuildInfo.status)}`}>
+                      {currentBuildInfo.status}
+                    </span>
+                  ) : <p className="text-sm font-black text-slate-300">—</p>}
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Released to store</p>
+                  {currentBuildInfo.releasedToStore ? (
+                    <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider ${getStatusStyles(currentBuildInfo.releasedToStore)}`}>
+                      {currentBuildInfo.releasedToStore}
+                    </span>
+                  ) : <p className="text-sm font-black text-slate-300">—</p>}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-[1.8rem] w-full md:w-auto overflow-x-auto gap-1 shadow-inner no-scrollbar">
           {Object.values(TABS_CONFIG).map(tab => (
@@ -458,148 +827,169 @@ export default function App() {
               <MetricCard title="Pass Rate" value={`${summaryStats?.executed ? ((summaryStats.passed / summaryStats.executed) * 100).toFixed(1) : 0}%`} icon="✅" />
               <MetricCard title="Critical" value={summaryStats?.critical || 0} icon="🌋" />
             </div>
-
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <Card title="Distribution" loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)}>
-                <div className="h-[300px] relative">
+                <div className="h-[400px] md:h-[360px] relative">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart margin={{ top: 0, right: 0, bottom: 20, left: 0 }}>
+                    <PieChart margin={{ top: 20, right: 100, bottom: 20, left: 100 }}>
                       <Pie 
                         {...({ activeIndex, activeShape: renderActiveShape } as any)} 
                         data={pieData} 
-                        cx="50%" cy="50%" innerRadius={55} outerRadius={75} paddingAngle={5} 
-                        dataKey="value"
+                        cx="50%" 
+                        cy="50%" 
+                        innerRadius={70} 
+                        outerRadius={95} 
+                        paddingAngle={5} 
+                        dataKey="value" 
+                        label={renderCustomizedPieLabel} 
+                        labelLine={{ stroke: isDark ? '#475569' : '#94a3b8', strokeWidth: 1.5 }} 
                         onMouseEnter={(_, i) => setActiveIndex(i)} 
                         onMouseLeave={() => setActiveIndex(-1)}
                       >
                         {pieData.map((e, i) => <Cell key={i} fill={e.color} stroke="none" />)}
                       </Pie>
                       <Tooltip content={<CustomTooltip />} />
-                      <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px', fontWeight: 'bold' }} />
+                      <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', paddingTop: '10px' }} />
                     </PieChart>
                   </ResponsiveContainer>
-                  <div className="absolute top-[42%] left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
-                    <div className="text-[10px] font-black text-slate-400 uppercase">Total</div>
-                    <div className="text-xl font-black text-slate-900 dark:text-white">{summaryStats?.executed || 0}</div>
+                  <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-[65%] text-center pointer-events-none select-none">
+                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Executed</div>
+                    <div className="text-3xl font-black text-slate-900 dark:text-white leading-tight">{summaryStats?.executed || 0}</div>
                   </div>
                 </div>
               </Card>
-
               <div className="lg:col-span-2">
                 <Card title="Methodology Trend" loading={loadingMap[activeTab]} error={errorMap[activeTab]}>
-                  <div className="h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={trendData} margin={{ top: 30, right: 10, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '10px', fontWeight: 'bold' }} />
-                        {/* Fix: remove the invalid 'hide' property from LabelList as it is not supported in the recharts LabelListProps */}
-                        <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[4, 4, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={9} fontWeight="900" fill={isDark ? '#cbd5e1' : '#64748b'} offset={8} />
-                        </Bar>
-                        <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[4, 4, 0, 0]} barSize={14}>
-                          <LabelList position="top" fontSize={9} fontWeight="900" fill={isDark ? '#cbd5e1' : '#64748b'} offset={8} />
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <div className="h-[300px]"><ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={trendData} margin={{ top: 40, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} interval={0} />
+                      <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold' }} />
+                      <Bar name="Automation" dataKey="Automation" fill={EXECUTION_COLORS.automation} radius={[6, 6, 0, 0]} barSize={16}>
+                        <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#cbd5e1' : '#1e293b'} offset={10} />
+                      </Bar>
+                      <Bar name="Manual" dataKey="Manual" fill={EXECUTION_COLORS.manual} radius={[6, 6, 0, 0]} barSize={16}>
+                        <LabelList position="top" fontSize={11} fontWeight="900" fill={isDark ? '#cbd5e1' : '#1e293b'} offset={10} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer></div>
                 </Card>
               </div>
             </div>
-
             <Card title="Issue Severity Trend" fullWidth>
-              <div className="h-[360px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={trendData} margin={{ top: 30, right: 20, left: -20, bottom: 10 }} stackOffset="none">
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
-                    <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 9, fontWeight: 800 }} axisLine={false} tickLine={false} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', paddingBottom: '20px' }} />
-                    <Bar name="Critical" dataKey="Critical" stackId="severity" fill={EXECUTION_COLORS.critical} barSize={28}>
-                       <LabelList dataKey="Critical" position="center" fill="#fff" fontSize={9} fontWeight="900" formatter={(val: any) => val > 0 ? val : ''} />
-                    </Bar>
-                    <Bar name="Major" dataKey="Major" stackId="severity" fill={EXECUTION_COLORS.major} barSize={28}>
-                       <LabelList dataKey="Major" position="center" fill="#fff" fontSize={9} fontWeight="900" formatter={(val: any) => val > 0 ? val : ''} />
-                    </Bar>
-                    <Bar name="Minor" dataKey="Minor" stackId="severity" fill={EXECUTION_COLORS.minor} radius={[4, 4, 0, 0]} barSize={28}>
-                       <LabelList dataKey="Minor" position="center" fill="#fff" fontSize={9} fontWeight="900" formatter={(val: any) => val > 0 ? val : ''} />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="h-[360px] relative flex flex-col items-center justify-center">
+                {trendHasNoIssues ? (
+                  <div className="flex flex-col items-center justify-center text-center p-12 space-y-3 animate-in fade-in zoom-in-95 duration-500">
+                    <div className="text-5xl opacity-30 grayscale mb-2">🎉</div>
+                    <h4 className="text-base font-black text-slate-900 dark:text-white uppercase tracking-tight">Perfect Score!</h4>
+                    <p className="text-sm font-bold text-slate-400 max-w-sm">No issues reported in this build context. All quality metrics are within target limits.</p>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={trendData} margin={{ top: 40, right: 20, left: -20, bottom: 10 }} stackOffset="none">
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? '#1e293b' : '#f1f5f9'} />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} interval={0} />
+                      <YAxis tick={{ fontSize: 10, fontWeight: 800 }} axisLine={false} tickLine={false} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', paddingBottom: '30px' }} />
+                      <Bar name="Critical" dataKey="Critical" stackId="severity" fill={EXECUTION_COLORS.critical} barSize={32}>
+                        <LabelList dataKey="Critical" position="center" fill="#fff" fontSize={11} fontWeight="900" formatter={(val: any) => val > 0 ? val : ''} />
+                      </Bar>
+                      <Bar name="Major" dataKey="Major" stackId="severity" fill={EXECUTION_COLORS.major} barSize={32}>
+                        <LabelList dataKey="Major" position="center" fill="#fff" fontSize={11} fontWeight="900" formatter={(val: any) => val > 0 ? val : ''} />
+                      </Bar>
+                      <Bar name="Minor" dataKey="Minor" stackId="severity" fill={EXECUTION_COLORS.minor} radius={[6, 6, 0, 0]} barSize={32}>
+                        <LabelList dataKey="Minor" position="center" fill="#fff" fontSize={11} fontWeight="900" formatter={(val: any) => val > 0 ? val : ''} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </Card>
-
-            <Card title="Execution Matrix" fullWidth>
-              <div className="max-h-[600px] overflow-auto custom-scrollbar border border-slate-100 dark:border-slate-800 rounded-2xl shadow-inner">
-                <table className="w-full text-left min-w-[1200px] border-separate border-spacing-0">
+            <Card title="Execution Matrix & Build Details" fullWidth>
+              <div className="max-h-[600px] overflow-auto custom-scrollbar border border-slate-100 dark:border-slate-800 rounded-2xl shadow-inner bg-white dark:bg-slate-900 relative">
+                <table className="w-full text-left min-w-[1400px] border-separate border-spacing-0">
                   <thead className="sticky top-0 z-40 bg-slate-50 dark:bg-slate-900 shadow-sm">
                     <tr className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky left-0 z-50 min-w-[200px]">RC Build</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-center">Platform</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-right">Total</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-right">Passed</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-right">Failed</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-right">Auto</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-right">Manual</th>
-                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 text-right">Severities</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 sticky left-0 z-50 min-w-[200px]">Build</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">Platform</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">Start Date</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-center">Status</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">Build Type</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Total Cases</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Passed</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Failed</th>
+                      <th className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-right">Severities</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredRows.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                        <td className="px-6 py-5 sticky left-0 z-30 bg-white dark:bg-slate-900 font-extrabold text-sm text-slate-900 dark:text-white border-r border-slate-50 dark:border-slate-800 whitespace-nowrap min-w-[200px]">
-                          {row['RC Build'] || row['Build']}
-                        </td>
-                        <td className="px-6 py-5 text-center text-[11px] font-bold text-slate-500">{row['Platform'] || 'N/A'}</td>
-                        <td className="px-6 py-5 text-xs font-black text-slate-500 text-right">{row['Total Test Cases'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-emerald-600 text-right">{row['Passed'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-violet-500 text-right">{row['Automation executed'] || 0}</td>
-                        <td className="px-6 py-5 text-xs font-black text-pink-500 text-right">{row['Manual executed'] || 0}</td>
-                        <td className="px-6 py-5 text-right">
-                          <div className="flex gap-1 justify-end">
-                            <Badge value={row['Critical Issues']} color="bg-rose-500" label="Crit" size="sm" />
-                            <Badge value={row['Major Issues']} color="bg-amber-500" label="Maj" size="sm" />
-                            <Badge value={row['Minor Issues']} color="bg-blue-500" label="Min" size="sm" />
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredRows.map((row, idx) => {
+                      const bCol = BUILD_COL_ALIASES.find(a => row[a] !== undefined);
+                      const pCol = PLATFORM_COL_ALIASES.find(a => row[a] !== undefined);
+                      const dCol = DATE_COL_ALIASES.find(a => row[a] !== undefined);
+                      const sCol = STATUS_COL_ALIASES.find(a => row[a] !== undefined);
+                      const tCol = TYPE_COL_ALIASES.find(a => row[a] !== undefined);
+                      
+                      const buildRaw = String(row[bCol || ''] || '').trim();
+                      const platformRaw = String(row[pCol || ''] || '').trim();
+                      const buildKey = `${normalize(buildRaw)}_${normalize(platformRaw)}`;
+                      const fallbackKey = `${normalize(buildRaw)}_any`;
+                      const buildDetails = issueDetailsMap[buildKey] || issueDetailsMap[fallbackKey];
+                      
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                          <td className="px-6 py-5 sticky left-0 z-30 bg-white dark:bg-slate-900 font-extrabold text-sm text-slate-900 dark:text-white border-r border-slate-50 dark:border-slate-800 whitespace-nowrap min-w-[200px]">{row[bCol || ''] || '-'}</td>
+                          <td className="px-6 py-5 text-[11px] font-bold text-slate-500 whitespace-nowrap">{row[pCol || ''] || 'N/A'}</td>
+                          <td className="px-6 py-5 text-[11px] font-bold text-slate-500 whitespace-nowrap">{row[dCol || ''] || '-'}</td>
+                          <td className="px-6 py-5 text-center"><span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${getStatusStyles(row[sCol || ''])} whitespace-nowrap`}>{row[sCol || ''] || 'N/A'}</span></td>
+                          <td className="px-6 py-5"><span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider ${getBuildTypeStyles(row[tCol || ''])} whitespace-nowrap`}>{row[tCol || ''] || 'N/A'}</span></td>
+                          <td className="px-6 py-5 text-xs font-black text-slate-500 text-right">{row['Total Test Cases'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-emerald-600 text-right">{row['Passed'] || 0}</td>
+                          <td className="px-6 py-5 text-xs font-black text-rose-500 text-right">{row['Failed'] || 0}</td>
+                          <td className="px-6 py-5 text-right">
+                            <div className="flex gap-1 justify-end">
+                              <Badge value={row['Critical Issues']} color="bg-rose-500" label="Critical" size="sm" details={buildDetails?.critical} />
+                              <Badge value={row['Major Issues']} color="bg-amber-500" label="Major" size="sm" details={buildDetails?.major} />
+                              <Badge value={row['Minor Issues']} color="bg-blue-500" label="Minor" size="sm" details={buildDetails?.minor} />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredRows.length === 0 && (
+                      <tr><td colSpan={9} className="px-6 py-12 text-center text-slate-400 font-bold text-xs uppercase tracking-widest italic">No matching build details found</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
             </Card>
           </div>
         ) : (
-          <Card title={activeTab === 'new_issues' ? 'Issue Backlog' : 'Validation Queue'} loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)} discoveredTabs={discoveredTabs} fullWidth>
-            <div className="max-h-[600px] overflow-auto custom-scrollbar border border-slate-100 dark:border-slate-800 rounded-2xl shadow-inner bg-white dark:bg-slate-900">
+          <Card title={activeTab === 'new_issues' ? 'Issue Backlog (External Data)' : 'Validation Queue'} loading={loadingMap[activeTab]} error={errorMap[activeTab]} onRetry={() => fetchData(activeTab)} discoveredTabs={discoveredTabs} fullWidth>
+            <div className="max-h-[600px] overflow-auto custom-scrollbar border border-slate-100 dark:border-slate-800 rounded-2xl shadow-inner bg-white dark:bg-slate-900 relative">
               <table className="w-full text-left min-w-[1000px] border-separate border-spacing-0">
-                <thead className="sticky top-0 z-40 bg-slate-50 dark:bg-slate-900">
-                  <tr className="text-[10px] font-black uppercase text-slate-400">
-                    {dataMap[activeTab]?.headers.map((h, i) => (
-                      <th key={i} className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap bg-slate-50 dark:bg-slate-900">{h}</th>
-                    ))}
+                <thead className="sticky top-0 z-40 bg-slate-50 dark:bg-slate-900 shadow-sm">
+                  <tr className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                    {displayHeaders.map((h, i) => <th key={i} className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap bg-slate-50 dark:bg-slate-900">{h}</th>)}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {filteredRows.map((row, i) => (
                     <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                      {dataMap[activeTab]?.headers.map((h, j) => (
-                        <td key={j} className="px-6 py-5 text-[12px] font-bold text-slate-600 dark:text-slate-300 leading-relaxed min-w-[120px]">
-                          {row[h] || '-'}
-                        </td>
-                      ))}
+                      {displayHeaders.map((h, j) => {
+                        const isStatus = STATUS_COL_ALIASES.includes(h);
+                        const val = row[h];
+                        if (isStatus && val) {
+                          return <td key={j} className="px-6 py-5 min-w-[120px] whitespace-nowrap"><span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${getStatusStyles(val)}`}>{val}</span></td>;
+                        }
+                        return <td key={j} className="px-6 py-5 text-[12px] font-bold text-slate-600 dark:text-slate-300 leading-relaxed min-w-[120px] whitespace-nowrap">{val || '-'}</td>;
+                      })}
                     </tr>
                   ))}
                   {filteredRows.length === 0 && !loadingMap[activeTab] && (
-                    <tr>
-                      <td colSpan={dataMap[activeTab]?.headers.length || 1} className="px-6 py-12 text-center text-slate-400 font-bold text-xs uppercase tracking-widest italic">
-                        No records match the current filters
-                      </td>
-                    </tr>
+                    <tr><td colSpan={displayHeaders.length || 1} className="px-6 py-12 text-center text-slate-400 font-bold text-xs uppercase tracking-widest italic">No records match the current filters</td></tr>
                   )}
                 </tbody>
               </table>
@@ -625,28 +1015,19 @@ function Card({ title, children, loading, error, onRetry, discoveredTabs, fullWi
   const tabsList = discoveredTabs ? Object.entries(discoveredTabs) : [];
   return (
     <div className={`bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col min-h-[400px] ${fullWidth ? 'lg:col-span-3' : ''}`}>
-      <div className="px-8 py-6 border-b border-slate-50 dark:border-slate-800/50 flex justify-between items-center">
-        <h3 className="text-[12px] font-black uppercase tracking-widest text-slate-400">{title}</h3>
-      </div>
+      <div className="px-8 py-6 border-b border-slate-50 dark:border-slate-800/50 flex justify-between items-center"><h3 className="text-[12px] font-black uppercase tracking-widest text-slate-400">{title}</h3></div>
       <div className="p-8 flex-1 relative flex flex-col">
-        {loading && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm rounded-[2.5rem]">
-            <div className="w-8 h-8 border-3 border-primary-600 border-t-transparent rounded-full animate-spin" />
-          </div>
-        )}
+        {loading && <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm rounded-[2.5rem]"><div className="w-8 h-8 border-3 border-primary-600 border-t-transparent rounded-full animate-spin" /></div>}
         {error ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4">
             <div className="text-4xl opacity-40">⚠️</div>
             <p className="text-[11px] font-bold text-rose-500 max-w-xs">{error}</p>
             {tabsList.length > 0 && (
-              <div className="bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl text-left w-full max-w-sm border border-slate-100 dark:border-slate-700">
+              <div className="bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl text-left w-full max-sm border border-slate-100 dark:border-slate-700">
                 <p className="text-[9px] font-black uppercase text-slate-400 mb-2 tracking-widest">Available Sheets (Discovery):</p>
                 <div className="space-y-1">
                   {tabsList.map(([name, gid]) => (
-                    <div key={gid} className="flex justify-between items-center text-[10px] font-bold text-slate-600 dark:text-slate-400">
-                      <span>{name}</span>
-                      <span className="bg-slate-100 dark:bg-slate-700 px-1 rounded text-[8px]">GID: {gid}</span>
-                    </div>
+                    <div key={gid} className="flex justify-between items-center text-[10px] font-bold text-slate-600 dark:text-slate-400"><span>{name}</span><span className="bg-slate-100 dark:bg-slate-700 px-1 rounded text-[8px]">GID: {gid}</span></div>
                   ))}
                 </div>
               </div>
@@ -659,13 +1040,38 @@ function Card({ title, children, loading, error, onRetry, discoveredTabs, fullWi
   );
 }
 
-function Badge({ value, color, label, size = 'md' }: BadgeProps) {
-  const v = (!value || value === 0 || value === "" || isNaN(value)) ? '-' : value;
+function Badge({ value, color, label, size = 'md', details }: BadgeProps) {
+  const vNum = Number(value);
+  const isZero = isNaN(vNum) || vNum === 0;
+  const displayVal = isZero ? '-' : value;
   const s = size === 'sm' ? 'w-8 h-8 text-[10px]' : 'w-10 h-10 text-[12px]';
+  const hasDetails = details && details.length > 0;
+  
+  // Do not show tooltip if count is 0
+  const canShowTooltip = !isZero;
+
   return (
     <div className="relative group/badge inline-block">
-      <div className={`${s} rounded-lg flex items-center justify-center font-black transition-all ${v === '-' ? 'bg-slate-100 text-slate-300 dark:bg-slate-800 dark:text-slate-700' : `${color} text-white shadow-sm`}`}>{v}</div>
-      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1 bg-slate-900 text-white text-[9px] font-black uppercase rounded opacity-0 group-hover/badge:opacity-100 pointer-events-none transition-all z-[100] whitespace-nowrap shadow-xl">{label}: {v}</div>
+      <div className={`${s} rounded-lg flex items-center justify-center font-black transition-all ${isZero ? 'bg-slate-100 text-slate-300 dark:bg-slate-800 dark:text-slate-700' : `${color} text-white shadow-sm cursor-help hover:scale-105 active:scale-95`}`}>
+        {displayVal}
+      </div>
+      
+      {canShowTooltip && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 p-3 bg-slate-900/95 backdrop-blur text-white rounded-xl opacity-0 scale-95 translate-y-2 group-hover/badge:opacity-100 group-hover/badge:scale-100 group-hover/badge:translate-y-0 pointer-events-none transition-all duration-200 ease-out z-[100] shadow-2xl border border-white/10 min-w-[200px] max-w-[340px]">
+          <div className="flex items-center justify-between gap-4 mb-2 border-b border-white/10 pb-2">
+             <span className="text-[11px] font-black uppercase tracking-wider">{displayVal} {label} {vNum === 1 ? 'Issue' : 'Issues'}</span>
+          </div>
+          {hasDetails ? (
+            <ul className="space-y-1.5 max-h-[160px] overflow-y-auto no-scrollbar pr-1 text-left">
+              {details.slice(0, 10).map((d, i) => (
+                <li key={i} className="text-[10px] font-medium leading-tight text-slate-200 list-disc list-inside break-words">{d}</li>
+              ))}
+              {details.length > 10 && <li className="text-[9px] font-black text-primary-400 uppercase tracking-tighter pt-1 sticky bottom-0 bg-slate-900/95">+ {details.length - 10} more issues</li>}
+            </ul>
+          ) : <p className="text-[10px] italic text-slate-400 font-medium">No matching detail records found</p>}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-slate-900/95" />
+        </div>
+      )}
     </div>
   );
 }
